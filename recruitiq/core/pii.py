@@ -53,8 +53,12 @@ def mask(text: str, names: list[str] | None = None, replace: bool = True) -> Mas
     out = _sub(PERSONAL_LINE, tag("[personal detail removed]"), out, "personal_line", counts)
     out = _sub(BORN, tag("[personal detail removed]"), out, "personal_line", counts)
     out = _sub(TITLES, "", out, "title", counts)
+    from .skills import default_ontology
+    known = {a for spec in default_ontology().skills.values() for a in spec["aliases"]}
     for name in names or []:
-        for part in {name.strip(), *[p for p in name.split() if len(p) > 2]}:
+        # a name part that is also a skill word (someone called Chef, or "Docker Jones" as a joke name) is removed only
+        # as part of the whole name, so it cannot delete a real skill from the work history
+        for part in {name.strip(), *[p for p in name.split() if len(p) > 2 and p.lower() not in known]}:
             if part:
                 out = _sub(re.compile(re.escape(part), re.I), tag("[candidate]"), out, "name", counts)
     for pat, repl in PRONOUNS.items():

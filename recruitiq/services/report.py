@@ -14,7 +14,19 @@ class _Pdf(FPDF):
         self.cell(0, 6, f"RecruitIQ review sheet. Page {self.page_no()}", align="C")
 
 
+def _bmp(o):
+    # the bundled font has no glyphs beyond the basic plane (emoji), and fpdf would warn on every one
+    if isinstance(o, str):
+        return "".join(ch for ch in o if ord(ch) <= 0xFFFF)
+    if isinstance(o, list):
+        return [_bmp(x) for x in o]
+    if isinstance(o, dict):
+        return {k: _bmp(v) for k, v in o.items()}
+    return o
+
+
 def build_pdf(ref: str, job_title: str, result: dict, status: str, decision_reason: str, identity: dict | None) -> bytes:
+    result, decision_reason, identity = _bmp(result), _bmp(decision_reason), _bmp(identity)
     pdf = _Pdf()
     pdf.add_font("dv", "", str(FONTS / "DejaVuSans.ttf"))
     pdf.add_font("dv", "B", str(FONTS / "DejaVuSans-Bold.ttf"))

@@ -14,7 +14,7 @@ output is a ranking aid. It is never an accept or reject decision.
 """
 from dataclasses import asdict, dataclass, field
 
-from . import injection, pii
+from . import copied, injection, pii
 from .experience import work_years
 from .jobspec import JobSpec
 from .similarity import Similarity, TfidfSimilarity
@@ -78,12 +78,14 @@ class Scorer:
                 return SkillResult(name, "related", CREDIT["related"], hits[near].evidence, via=near)
         return SkillResult(name, "missing", 0.0)
 
-    def score(self, resume_text: str, job: JobSpec, candidate_names: list[str] | None = None) -> ScoreResult:
+    def score(self, resume_text: str, job: JobSpec, candidate_names: list[str] | None = None, extra_flags: list | None = None) -> ScoreResult:
         masked = pii.mask(resume_text, candidate_names, replace=False)
-        text = masked.text
+        text, n_copied = copied.remove_copied(masked.text, job.description)
         notes = []
         hits = self.o.extract(text)
-        flags = injection.scan(resume_text, hits)
+        flags = injection.scan(resume_text, hits) + list(extra_flags or [])
+        if n_copied:
+            flags.append(injection.Flag("copies_job_description", f"{n_copied} lines repeat the job description word for word and were not counted as the candidate's experience", "review"))
 
         req = [self._skill(s, hits) for s in job.required]
         pref = [self._skill(s, hits) for s in job.preferred]

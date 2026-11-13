@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..config import ROOT, Settings, get_settings
 from ..core import evidence, fairness, gaps, pii
+from ..core.injection import Flag
 from ..core.jobspec import JobSpec
 from ..core.scoring import Scorer
 from ..core.skills import default_ontology
@@ -134,7 +135,7 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
 
     # ------------------------------------------------------------- applications
     def _ingest(db: Session, org_id: int, job: Job, name: str, email: str, text: str, source: str, consent: bool,
-                user: User | None) -> Application:
+                user: User | None, file_flags: list | None = None) -> Application:
         if not consent:
             raise HTTPException(422, "the candidate's consent to process their application is required")
         if job.status != "open":
@@ -157,7 +158,8 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
             db.rollback()
             raise HTTPException(409, "this candidate has already applied for this job")
         spec = JobSpec(job.title, job.description, job.required, job.preferred, job.min_years)
-        res = app.state.scorer.score(text, spec, [cand.name])
+        extra = [Flag("hidden_text", n, "review") for n in file_flags or []]
+        res = app.state.scorer.score(text, spec, [cand.name], extra)
         a = Application(org_id=org_id, job_id=job.id, candidate_id=cand.id, status="scored", score=res.score, band=res.band,
                         needs_review=res.needs_review, result=res.as_dict())
         db.add(a)
@@ -181,14 +183,14 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
                     resume_text_field: str = Form("", alias="resume_text"), file: UploadFile | None = File(None),
                     user: User = Depends(current_user), db: Session = Depends(get_db)):
         job = _job(db, user, job_id)
-        text = resume_text_field
+        text, file_flags = resume_text_field, []
         if file is not None:
             try:
                 raw = await file.read(settings.max_upload_mb * 1_000_000 + 1)
-                text = resume_text.extract(raw, file.filename or "", settings.max_upload_mb * 1_000_000)
+                text, file_flags = resume_text.extract_ex(raw, file.filename or "", settings.max_upload_mb * 1_000_000)
             except resume_text.UploadError as e:
                 raise HTTPException(422, str(e))
-        a = _ingest(db, user.org_id, job, name, email, text, "upload", consent, user)
+        a = _ingest(db, user.org_id, job, name, email, text, "upload", consent, user, file_flags)
         return _summary(a)
 
     @app.post("/jobs/{job_id}/applications/json", status_code=201)

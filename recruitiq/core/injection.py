@@ -18,8 +18,28 @@ PATTERNS = [
     (r"(?:recommend|shortlist|hire|select) (?:this|the|me|candidate)[^.\n]{0,30}(?:immediately|strongly|without)", "decision_demand"),
     (r"do not (?:mention|reveal|tell|flag)", "concealment"),
     (r"</?(?:system|instructions?|prompt)>", "markup_injection"),
+    (r"(?:note|message|instructions?) (?:to|for) (?:the )?(?:a\.?i\.?|llm|model|reviewer|reviewing|screening|system|assistant|bot|hiring)", "message_to_ai"),
+    (r"(?:treat|consider|regard|view|mark) (?:this|the) (?:applicant|candidate|resume|cv)[^.\n]{0,40}(?:excellent|perfect|ideal|best|top|outstanding|strong)", "score_demand"),
+    (r"rank (?:me|them|this (?:candidate|applicant)|this resume) (?:first|highest|top|#1)", "score_demand"),
+    # the same "ignore the instructions" idea in French, Spanish, German and Portuguese
+    (r"ignor(?:ez|e|a|ar|iere)\s+(?:toutes?\s+|todas?\s+|alle\s+)?(?:les|las|die|as|vorherigen)?\s*(?:instructions?|instrucciones|anweisungen|instruções)", "instruction_override"),
+]
+# phrases checked again on the text with every space and symbol removed, which catches "i g n o r e  a l l ..."
+COMPACT = [
+    (r"ignore(?:all|any)?(?:the)?(?:previous|prior|above)(?:instructions|prompts?)", "instruction_override"),
+    (r"(?:system|developer)prompt", "role_prompt"),
+    (r"(?:rate|score|rank)(?:this|the)?candidate", "score_demand"),
+    (r"(?:give|assign)(?:this|the)?candidate(?:the)?(?:highest|top|best|maximum|perfect)", "score_demand"),
 ]
 ZERO_WIDTH = {"​", "‌", "‍", "⁠", "﻿", "‮", "‭"}
+
+
+def _mixed_script(word: str) -> bool:
+    scripts = set()
+    for ch in word:
+        if ch.isalpha():
+            scripts.add(unicodedata.name(ch, "?").split()[0])
+    return "LATIN" in scripts and bool(scripts & {"CYRILLIC", "GREEK"})
 
 
 @dataclass
@@ -37,6 +57,17 @@ def scan(text: str, skills_found: dict | None = None) -> list[Flag]:
         m = re.search(pat, low)
         if m:
             flags.append(Flag(kind, f"text resembling an instruction to an AI system: '{m.group()[:60]}'", "review"))
+    kinds = {f.kind for f in flags}
+    compact = re.sub(r"[^a-z]", "", low)
+    for pat, kind in COMPACT:
+        m = re.search(pat, compact)
+        if m and kind not in kinds:
+            flags.append(Flag(kind, "text resembling an instruction to an AI system, written with spaces or symbols between the letters", "review"))
+            kinds.add(kind)
+    mixed = [w for w in re.findall(r"\w{3,}", t) if _mixed_script(w)]
+    if len(mixed) >= 2:
+        flags.append(Flag("mixed_scripts", f"{len(mixed)} words mix Latin letters with look-alike letters from another alphabet, for example '{mixed[0]}'. "
+                          "Those words will not match any skill", "review"))
     zw = sum(1 for ch in t if ch in ZERO_WIDTH)
     if zw >= 5:
         flags.append(Flag("hidden_characters", f"{zw} zero-width or direction-override characters", "review"))

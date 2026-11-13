@@ -54,16 +54,16 @@
       }
     },
     "new scorer": {
-      "ndcg": 0.9425827493309396,
-      "pairwise_order": 0.8034285714285715,
+      "ndcg": 0.942360234801776,
+      "pairwise_order": 0.8025714285714286,
       "stuffed_or_injected_beats_a_strong_resume": 0.0,
       "top_ranked_is_a_good_fit": 1.0,
       "mean_score_by_kind": {
         "strong": 79.8,
-        "paraphrased": 80.3,
+        "paraphrased": 80.2,
         "hard_paraphrase": 20.7,
         "adjacent": 67.4,
-        "junior": 68.8,
+        "junior": 68.3,
         "partial": 46.4,
         "stuffed": 56.3,
         "injected": 24.5,

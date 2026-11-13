@@ -13,6 +13,9 @@ OTHER_HEADINGS = re.compile(r"^\s*(?:experience|work experience|professional exp
                             r"certifications?|achievements|summary|profile|objective|publications|awards)\b[^\n]*$", re.I | re.M)
 
 
+FILLER = {"and", "with", "using", "the", "for", "in", "on", "of", "etc", "including", "such", "stack", "tools", "tech", "skills"}
+
+
 def _alias_regex(alias: str) -> re.Pattern:
     # whole-word match that also works for c++, c#, .net, node.js, ci/cd. \b does not work next to + # . so we
     # use explicit look-around on "word-ish" characters instead
@@ -69,9 +72,39 @@ class Ontology:
         (skills_parts if kind == "skills" else rest_parts).append(text[last_end:])
         return "\n".join(skills_parts), "\n".join(rest_parts)
 
+    def _list_like(self, sentence: str) -> bool:
+        """A line that is mostly skill names with few other words is a keyword list, wherever it sits in the resume.
+
+        Without this, pasting the skills again under "Experience" (or a few hundred times) would count as evidence of work.
+        Real sentences carry other words: what was built, for whom, how big.
+        """
+        spans, names = [], set()
+        for name, rx in self._rx:
+            for m in rx.finditer(sentence):
+                spans.append((m.start(), m.end()))
+                names.add(name)
+        if len(names) < 3:
+            return False
+        covered = [False] * len(sentence)
+        for a, b in spans:
+            for i in range(a, b):
+                covered[i] = True
+        rest = "".join(ch if not covered[i] else " " for i, ch in enumerate(sentence))
+        free = [w for w in re.findall(r"[A-Za-z]{3,}", rest) if w.lower() not in FILLER]
+        return len(free) < 0.5 * len(names)
+
     def extract(self, text: str, max_evidence: int = 2) -> dict[str, SkillHit]:
         skills_block, rest = self.split_sections(text)
         sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", rest) if len(s.strip()) > 25]
+        # keyword lists that sit under an experience heading are moved over to the skills side
+        prose = []
+        for sent in sentences:
+            if self._list_like(sent):
+                skills_block += "\n" + sent
+                rest = rest.replace(sent, " ")
+            else:
+                prose.append(sent)
+        sentences = prose
         hits: dict[str, SkillHit] = {}
         for name, rx in self._rx:
             n_skills = len(rx.findall(skills_block))
