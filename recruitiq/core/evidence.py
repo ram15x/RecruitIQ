@@ -73,3 +73,37 @@ def search(query: str, text: str, o: Ontology | None = None, limit: int = 3) -> 
     # lines in the work history first, then the ones that are only keyword lists
     found.sort(key=lambda L: (L.in_skills_list, -len(L.text) // 40))
     return found[:limit]
+
+
+def retrieve(question: str, docs: dict, o: Ontology | None = None, k: int = 12) -> list[dict]:
+    """Find the resume lines most related to a free-form question, across a pool. docs maps a reference to resume text.
+
+    Words are weighted by how rare they are across the pool, so "kafka" counts for more than "team". A skill named in the
+    question also brings in its other spellings. Returns real lines only: [{"n", "ref", "text", "in_skills_list"}].
+    """
+    import math
+    o = o or default_ontology()
+    wanted = set()
+    for g in terms(question, o):
+        for a in g:
+            wanted.update(re.findall(r"[a-z0-9+#.\-]+", a))
+    wanted -= STOP
+    if not wanted:
+        return []
+    items = [(ref, line, flag) for ref, t in docs.items() for line, flag in _lines(t)]
+    df: dict = {}
+    toks = []
+    for _, line, _ in items:
+        ts = set(re.findall(r"[a-z0-9+#.\-]+", line.lower()))
+        toks.append(ts)
+        for w in ts & wanted:
+            df[w] = df.get(w, 0) + 1
+    n = len(items) or 1
+    scored = []
+    for (ref, line, flag), ts in zip(items, toks):
+        hit = ts & wanted
+        if hit:
+            s = sum(math.log(1 + n / df[w]) for w in hit) / math.sqrt(len(ts) + 4)
+            scored.append((s * (0.6 if flag else 1.0), ref, line, flag))
+    scored.sort(key=lambda x: -x[0])
+    return [{"n": i + 1, "ref": ref, "text": line, "in_skills_list": flag} for i, (_, ref, line, flag) in enumerate(scored[:k])]

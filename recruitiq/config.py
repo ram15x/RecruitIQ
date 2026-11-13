@@ -29,7 +29,15 @@ class Settings:
     smtp_user: str = field(default_factory=lambda: os.environ.get("SMTP_USER", ""))
     smtp_password: str = field(default_factory=lambda: os.environ.get("SMTP_PASSWORD", ""))
     mail_from: str = field(default_factory=lambda: os.environ.get("MAIL_FROM", ""))
+    # reading applications from a mailbox. defaults reuse the SMTP login, which is the same Gmail account
+    imap_host: str = field(default_factory=lambda: os.environ.get("IMAP_HOST", "imap.gmail.com"))
+    imap_user: str = field(default_factory=lambda: os.environ.get("IMAP_USER", "") or os.environ.get("SMTP_USER", ""))
+    imap_password: str = field(default_factory=lambda: os.environ.get("IMAP_PASSWORD", "") or os.environ.get("SMTP_PASSWORD", ""))
+    inbox_folder: str = field(default_factory=lambda: os.environ.get("RECRUITIQ_INBOX_FOLDER", "INBOX"))
+    # 0 means only when someone presses the button
+    inbox_poll_seconds: int = field(default_factory=lambda: int(os.environ.get("RECRUITIQ_INBOX_POLL_SECONDS", "0")))
     # optional LLM helper. nothing in scoring uses it
+    llm_models: list = field(default_factory=lambda: [m for m in os.environ.get("RECRUITIQ_LLM_MODELS", "").split(",") if m] or None)
     llm_api_key: str = field(default_factory=lambda: os.environ.get("OPENROUTER_API_KEY", ""))
 
 

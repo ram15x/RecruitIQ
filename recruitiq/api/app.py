@@ -1,3 +1,4 @@
+import asyncio
 import datetime as dt
 import json
 import logging
@@ -19,8 +20,8 @@ from ..core.scoring import Scorer
 from ..core.skills import default_ontology
 from ..db.models import Application, Candidate, Demographic, Interview, Job, Notification, Org, User, now
 from ..db.session import make_engine, make_session_factory
+from ..services import inbox, llm, notify, report, resume_text, security
 from ..services import interview as iv
-from ..services import llm, notify, report, resume_text, security
 from . import schemas
 from .deps import admin_only, audit, current_user, get_db, org_name
 
@@ -47,10 +48,14 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         if settings.demo:
             from .. import demo
             demo.seed(app.state.session_factory, app.state.scorer)
+        task = asyncio.create_task(_poll_forever()) if settings.inbox_poll_seconds > 0 and settings.imap_user else None
         yield
+        if task:
+            task.cancel()
         app.state.engine.dispose()
 
     app = FastAPI(title="RecruitIQ", version="2.0.0", lifespan=lifespan)
+    app.state.imap_factory = None  # tests put a fake mailbox here
     app.state.settings = settings
     app.state.scorer = scorer or Scorer()
     app.state.throttle = security.LoginThrottle()
@@ -109,7 +114,11 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
     def parse_job(body: schemas.JobIn, user: User = Depends(current_user)):
         """Preview the skills we would pull out of a description, so a person can fix them before saving."""
         spec = JobSpec.from_text(body.title, body.description, required=body.required, preferred=body.preferred, min_years=body.min_years)
-        return {"required": spec.required, "preferred": spec.preferred, "min_years": spec.min_years}
+        out = {"required": spec.required, "preferred": spec.preferred, "min_years": spec.min_years}
+        if settings.llm_api_key:
+            # a second opinion for skills the built-in list does not know. the job text is not personal data
+            out["llm_suggestion"] = llm.suggest_job_skills(settings.llm_api_key, body.description, models=settings.llm_models)
+        return out
 
     @app.post("/jobs", response_model=schemas.JobOut, status_code=201)
     def create_job(body: schemas.JobIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
@@ -151,7 +160,7 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
             cand.retention_until = retention
         else:
             cand = Candidate(org_id=org_id, name=name.strip(), email=email, source=source, resume_text=text,
-                             consent_version=CONSENT_VERSION, retention_until=retention)
+                             consent_version="email-v1" if source == "email" else CONSENT_VERSION, retention_until=retention)
             db.add(cand)
             db.flush()
         if db.scalar(select(Application).where(Application.job_id == job.id, Application.candidate_id == cand.id)):
@@ -473,6 +482,114 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         from ..db.models import AuditLog
         rows = db.scalars(select(AuditLog).where(AuditLog.org_id == admin.org_id).order_by(AuditLog.id.desc()).limit(min(limit, 500)))
         return [{"at": r.at.isoformat(), "user_id": r.user_id, "action": r.action, "entity": r.entity, "entity_id": r.entity_id, "detail": r.detail} for r in rows]
+
+    # ------------------------------------------------------------------ inbox
+    def _poll_inbox(org_id: int) -> dict:
+        """Read unread mail, score every application found, mark those as read. Nothing is sent, moved or deleted."""
+        if not (settings.imap_user and settings.imap_password):
+            raise HTTPException(400, "mailbox is not configured (IMAP_USER and IMAP_PASSWORD, or the SMTP ones)")
+        try:
+            mails, conn = inbox.fetch_unseen(settings.imap_host, settings.imap_user, settings.imap_password, settings.inbox_folder,
+                                             limit=50, factory=app.state.imap_factory)
+        except Exception as e:
+            log.warning("mailbox login or read failed: %s", type(e).__name__)
+            raise HTTPException(502, "could not read the mailbox. Check IMAP is on and the app password is right")
+        out = {"read": len(mails), "created": 0, "already_applied": 0, "left_unread": []}
+        done = []
+        try:
+            from rapidfuzz import fuzz
+            with app.state.session_factory() as db:
+                jobs = list(db.scalars(select(Job).where(Job.org_id == org_id, Job.status == "open")))
+                for m in mails:
+                    jid = inbox.job_id_from_subject(m.subject)
+                    job = next((j for j in jobs if j.id == jid), None) if jid else None
+                    if not job:
+                        best = max(jobs, key=lambda j: fuzz.partial_ratio(j.title.lower(), m.subject.lower()), default=None)
+                        if best and fuzz.partial_ratio(best.title.lower(), m.subject.lower()) >= 88:
+                            job = best
+                    if not job:
+                        out["left_unread"].append({"from": m.sender_email, "subject": m.subject[:80], "why": "no matching open job. put [job:ID] in the subject"})
+                        continue
+                    try:
+                        if m.attachments:
+                            fn, data = m.attachments[0]
+                            text, fl = resume_text.extract_ex(data, fn, settings.max_upload_mb * 1_000_000)
+                        else:
+                            text, fl = m.body, []
+                        _ingest(db, org_id, job, m.sender_name, m.sender_email, text, "email", True, None, fl)
+                        out["created"] += 1
+                        done.append(m.uid)
+                    except HTTPException as e:
+                        if e.status_code == 409:
+                            out["already_applied"] += 1
+                            done.append(m.uid)
+                        else:
+                            out["left_unread"].append({"from": m.sender_email, "subject": m.subject[:80], "why": str(e.detail)})
+                    except resume_text.UploadError as e:
+                        out["left_unread"].append({"from": m.sender_email, "subject": m.subject[:80], "why": str(e)})
+            inbox.mark_seen(conn, done)
+        finally:
+            inbox.close(conn)
+        return out
+
+    async def _poll_forever():
+        while True:
+            try:
+                with app.state.session_factory() as db:
+                    org = db.scalar(select(Org).order_by(Org.id))
+                if org:
+                    await asyncio.to_thread(_poll_inbox, org.id)
+            except Exception as e:
+                log.warning("inbox poll failed: %s", getattr(e, "detail", type(e).__name__))
+            await asyncio.sleep(max(settings.inbox_poll_seconds, 60))
+
+    @app.post("/admin/inbox/poll")
+    def poll_now(admin: User = Depends(admin_only), db: Session = Depends(get_db)):
+        """Pull new applications from the mailbox now. Subject should hold [job:ID] or the job title."""
+        out = _poll_inbox(admin.org_id)
+        audit(db, admin, "inbox_polled", "mailbox", "", f"{out['created']} created")
+        return out
+
+    @app.get("/capabilities")
+    def capabilities(user: User = Depends(current_user)):
+        return {"llm": bool(settings.llm_api_key), "inbox": bool(settings.imap_user and settings.imap_password),
+                "smtp": bool(settings.smtp_host and settings.smtp_user), "demo": settings.demo}
+
+    @app.post("/applications/{app_id}/brief")
+    def brief(app_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        """A short model-written brief for the reviewer. Uses the anonymised resume only, and every quote is checked against it."""
+        if not settings.llm_api_key:
+            raise HTTPException(400, "no language model key is set")
+        a = _app(db, user, app_id)
+        c, job = a.candidate, db.get(Job, a.job_id)
+        masked = pii.mask(c.resume_text, [c.name]).text
+        out = llm.reviewer_brief(settings.llm_api_key, masked, job.title, job.required, a.result.get("flags", []), models=settings.llm_models)
+        if out is None:
+            raise HTTPException(502, "the language model did not give a usable answer, try again later")
+        audit(db, user, "brief_generated", "application", a.id, "blocked" if "blocked" in out else "")
+        return out
+
+    @app.post("/jobs/{job_id}/ask")
+    def ask(job_id: int, body: schemas.AskIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        """Ask a question across this job's resumes. Retrieval picks real lines, the model may only use them and must cite them."""
+        if not settings.llm_api_key:
+            raise HTTPException(400, "no language model key is set")
+        _job(db, user, job_id)
+        docs, unsafe = {}, 0
+        for a in db.scalars(select(Application).where(Application.job_id == job_id, Application.org_id == user.org_id)):
+            if any(f.get("kind") in llm.UNSAFE for f in a.result.get("flags", [])):
+                unsafe += 1  # resumes that talk to AI systems are not shown to the model
+                continue
+            docs[ref(a.candidate_id)] = pii.mask(a.candidate.resume_text, [a.candidate.name]).text
+        lines = evidence.retrieve(body.question, docs)
+        out = llm.answer_from_lines(settings.llm_api_key, body.question, lines, models=settings.llm_models)
+        if out is None:
+            raise HTTPException(502, "the language model did not give a usable answer, try again later")
+        by_n = {ln["n"]: ln for ln in lines}
+        out["sources"] = [{"n": n, "ref": by_n[n]["ref"], "text": by_n[n]["text"]} for n in out["cites"]]
+        out["resumes_left_out"] = unsafe
+        audit(db, user, "pool_question", "job", job_id)
+        return out
 
     @app.get("/dashboard")
     def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db)):

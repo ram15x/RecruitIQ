@@ -22,6 +22,12 @@ def api() -> Api:
     return st.session_state.api
 
 
+def caps() -> dict:
+    if "caps" not in st.session_state:
+        st.session_state.caps = run(api().caps) or {}
+    return st.session_state.caps
+
+
 def run(fn, *a, **kw):
     # every call goes through here so an API error shows as a message instead of a stack trace
     try:
@@ -93,6 +99,9 @@ def page_jobs():
     if "parsed" in st.session_state:
         p = st.session_state.parsed
         st.write("Check these before saving. Edit them if the text missed something.")
+        if p.get("llm_suggestion"):
+            sg = p["llm_suggestion"]
+            st.caption("A language model also read the job text. Required: " + (", ".join(sg["required"]) or "none") + ". Preferred: " + (", ".join(sg["preferred"]) or "none") + ".")
         req = st.text_input("Required skills (comma separated)", ", ".join(p["required"]))
         pref = st.text_input("Preferred skills (comma separated)", ", ".join(p["preferred"]))
         if st.button("Save job"):
@@ -147,6 +156,7 @@ def page_candidates():
                         "closer look": "yes" if r["needs_review"] else "", "flags": r["flags"]} for r in rows])
     st.dataframe(df, hide_index=True, width="stretch")
     pool_search(job["id"])
+    pool_ask(job["id"])
     compare_box(job["id"], rows)
     aid = st.selectbox("Open application", [r["id"] for r in rows], format_func=lambda i: next(r["candidate_ref"] for r in rows if r["id"] == i))
     detail(aid)
@@ -165,6 +175,22 @@ def pool_search(jid):
                     for ln in m["lines"]:
                         tag = " (only in a skills list)" if ln["only_in_skills_list"] else ""
                         st.markdown(f"> {ln['text']}{tag}")
+
+
+def pool_ask(jid):
+    if not caps().get("llm"):
+        return
+    with st.expander("Ask a question about the resumes (language model)"):
+        st.caption("Only anonymised lines from the resumes are sent. The answer has to cite them, and resumes that contain text aimed at AI systems are left out.")
+        q = st.text_input("Question", placeholder="Who has run production systems on Kubernetes?", key=f"ask{jid}")
+        if st.button("Ask", key=f"askb{jid}") and q:
+            r = run(api().ask, jid, q)
+            if r:
+                st.write(r["answer"])
+                for src in r["sources"]:
+                    st.markdown(f"> {src['ref']}: {src['text']}")
+                if r.get("resumes_left_out"):
+                    st.info(f"{r['resumes_left_out']} resume(s) were left out because they contain instructions aimed at AI systems.")
 
 
 def compare_box(jid, rows):
@@ -217,6 +243,21 @@ def detail(aid):
         st.markdown("**What is holding the score back** (exact, from the weights above)")
         for g in a["gaps"][:5]:
             st.markdown(f"- {g['skill']} ({g['status']}): up to +{g['gain']} points if shown in the work history")
+    if caps().get("llm") and st.button("Write a reviewer brief (language model)", key=f"brief{aid}"):
+        b = run(api().brief, aid)
+        if b and b.get("blocked"):
+            st.warning(b["blocked"])
+        elif b:
+            st.caption(b["note"])
+            for title, key in (("Strengths", "strengths"), ("Gaps", "gaps")):
+                if b[key]:
+                    st.markdown(f"**{title}**")
+                    for p_ in b[key]:
+                        st.markdown(f"- {p_['point']}" + (f"\n  > {p_['quote']}" if p_["quote"] else ""))
+            if b["questions"]:
+                st.markdown("**Questions to ask**")
+                for q in b["questions"]:
+                    st.markdown(f"- {q}")
     with st.expander("Exactly what the scorer read (identity removed)"):
         st.text(a["what_the_scorer_saw"])
     st.markdown("**Your decision**")
@@ -295,6 +336,17 @@ def page_admin():
     log = run(api().audit) or []
     if log:
         st.dataframe(pd.DataFrame(log), hide_index=True, width="stretch")
+    st.subheader("Mailbox")
+    if caps().get("inbox"):
+        st.write("Reads unread mail, scores PDF and Word attachments, and marks those messages read. Put [job:ID] in the subject, or the job title. Nothing is sent or deleted.")
+        if st.button("Pull applications from the mailbox now"):
+            r = run(api().poll_inbox)
+            if r is not None:
+                st.success(f"{r['read']} read, {r['created']} added, {r['already_applied']} already applied.")
+                for x in r["left_unread"]:
+                    st.warning(f"Left unread: {x['from']} ({x['subject']}): {x['why']}")
+    else:
+        st.write("Not set up. Set IMAP_USER and IMAP_PASSWORD (a Gmail app password), or the SMTP ones, then restart.")
     st.subheader("Add a user")
     with st.form("user"):
         u = st.text_input("Username")

@@ -50,6 +50,10 @@ class Api:
     def health(self): return self.http.get("/health").json()
     def search(self, jid, q): return self._req("GET", f"/jobs/{jid}/search", params={"q": q}).json()
     def compare(self, jid, a, b): return self._req("GET", f"/jobs/{jid}/compare", params={"a": a, "b": b}).json()
+    def caps(self): return self._req("GET", "/capabilities").json()
+    def brief(self, aid): return self._req("POST", f"/applications/{aid}/brief").json()
+    def ask(self, jid, q): return self._req("POST", f"/jobs/{jid}/ask", json={"question": q}).json()
+    def poll_inbox(self): return self._req("POST", "/admin/inbox/poll").json()
     def application(self, aid, reveal=False): return self._req("GET", f"/applications/{aid}", params={"reveal": reveal}).json()
     def decide(self, aid, decision, reason): return self._req("POST", f"/applications/{aid}/decision", json={"decision": decision, "reason": reason}).json()
     def report(self, aid, reveal=False): return self._req("GET", f"/applications/{aid}/report.pdf", params={"reveal": reveal}).content

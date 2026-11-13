@@ -44,6 +44,16 @@ Sign in at http://localhost:8501 with the bootstrap user. The API docs are at ht
 
 With Docker: fill in `.env`, then `docker compose up --build`.
 
+## Collecting resumes from email
+
+Set `IMAP_USER` and `IMAP_PASSWORD` (or reuse the `SMTP_` ones for the same Gmail account) and an admin can press "Pull applications from the mailbox now", or set `RECRUITIQ_INBOX_POLL_SECONDS` to check on a schedule. Gmail needs 2-step verification, IMAP switched on and an app password. It reads unread mail, takes PDF, Word and text attachments, picks the job from `[job:ID]` in the subject (or a close match to the job title), scores each application and marks the message read. Mail it cannot place stays unread and is listed. It never sends, deletes or moves mail.
+
+Consent: an applicant who emails a resume has not ticked a box, so these applications are stored with the consent version `email-v1`. Put a short notice in the job posting saying that applying by email means you will process the application with software help. Check what your local rules require.
+
+## Language model helpers (optional)
+
+With an OpenRouter key set, there are three extras: a second opinion on which skills a job text asks for, a short reviewer brief for one candidate, and a question box across all resumes for a job. They follow the same rules: a model never changes a score or suggests a decision, resume text is sent only after names, contact details and personal lines are removed, every quote the model gives must appear word for word in the resume or it is dropped, and a resume that already contains text aimed at an AI system (or hidden text) is never sent. Free OpenRouter models may keep prompts, so for real candidates use a paid model or a no-retention provider. These helpers are tested with a mocked model. I have not run them against a live model yet, so expect to tune the prompts.
+
 ## Live demo
 
 A demo with made-up candidates is hosted on Render's free plan: https://recruitiq.onrender.com (login `demo` / `recruiter-demo-2026`). The free plan sleeps when idle, so the first load can take a minute, and the data resets whenever it restarts. Please do not upload real resumes to it. The `render.yaml` in this repo deploys the same thing. The demo includes a strong resume, a keyword-stuffed one, one with hidden instructions to the scorer, a resume that describes the right work in different words, and an unrelated one, so you can see how each is handled.
@@ -84,6 +94,10 @@ Please read these numbers carefully:
 - The method fails on one case I know of. A resume that describes the right work with none of the usual keywords (the "hard paraphrase" kind in the benchmark) scores low, about 21 on average. Any lexical method has this problem. A dense model may help, and I have not been able to check.
 - Stuffed resumes still land around 56 on average. They are flagged and sit below strong ones, but they are not near zero.
 
+## Robustness check
+
+`python -m eval.robustness` sends 34 awkward and hostile resumes through the real upload path: freshers, experienced people, a career changer, a gap, other date formats, non-English text, keyword stuffing, a pasted job description, prompt injection (plain, spaced out, French, role-play), zero-width and look-alike letters, white, tiny and hidden text in PDF and Word, impossible dates, scans, renamed executables and oversized files. The first run showed real holes: white text in a PDF lifted a score to 88 and repeated keywords to 94. Both are fixed (hidden text is dropped and flagged, a keyword list does not count as work evidence wherever it sits, and lines copied from the job description are excluded), and the run is now a test. Known gaps: white text over a background image is not detected, instruction-like text in a language or wording I did not think of will not be flagged (the score does not read it either way), and a resume with the right work in different words still scores low.
+
 ## Limits you should know about
 
 - It reads text. A scanned PDF with no text layer returns almost nothing, and the app says so instead of scoring it low.
@@ -115,7 +129,7 @@ recruitiq/ui        Streamlit dashboard
 portal/             the candidate interview page
 data/skills.yaml    skill ontology
 eval/               synthetic benchmark
-tests/              63 tests
+tests/              76 tests
 ```
 
 ## Tests

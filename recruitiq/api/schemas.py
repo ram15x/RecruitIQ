@@ -117,3 +117,7 @@ class WebhookIn(BaseModel):
     resume_text: str = Field(min_length=1, max_length=60000)
     consent: bool
     source: str = "webhook"
+
+
+class AskIn(BaseModel):
+    question: str = Field(min_length=4, max_length=300)
