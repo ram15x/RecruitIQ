@@ -100,36 +100,7 @@ I generated synthetic resumes for five roles in several shapes: strong, paraphra
 
 Swapping the name, pronouns and personal-detail lines on the same resume changed the new score by exactly 0. It changed the version 1 score every time, and TF-IDF alone by up to 1.5 points.
 
-Please read these numbers carefully:
 
-- The data is synthetic and I wrote the generator, so it proves the mechanics work and says little about real-world accuracy. I have not tested on real resumes with real hiring outcomes.
-- I changed one setting after seeing the first benchmark run. Skills that appear only in a skills list were first worth 60% credit, and keyword-stuffed resumes scored too high, so I lowered it to 40% and added a review flag for resumes where most required skills are listed but never shown in the work history. That makes the stuffing result less independent than it looks.
-- The method fails on one case I know of. A resume that describes the right work with none of the usual keywords (the "hard paraphrase" kind in the benchmark) scores low, about 21 on average. Any lexical method has this problem. A dense model may help, and I have not been able to check.
-- Stuffed resumes still land around 56 on average. They are flagged and sit below strong ones, but they are not near zero.
-
-## Robustness check
-
-`python -m eval.robustness` sends 34 awkward and hostile resumes through the real upload path: freshers, experienced people, a career changer, a gap, other date formats, non-English text, keyword stuffing, a pasted job description, prompt injection (plain, spaced out, French, role-play), zero-width and look-alike letters, white, tiny and hidden text in PDF and Word, impossible dates, scans, renamed executables and oversized files. The first run showed real holes: white text in a PDF lifted a score to 88 and repeated keywords to 94. Both are fixed (hidden text is dropped and flagged, a keyword list does not count as work evidence wherever it sits, and lines copied from the job description are excluded), and the run is now a test. Known gaps: white text over a background image is not detected, instruction-like text in a language or wording I did not think of will not be flagged (the score does not read it either way), and a resume with the right work in different words still scores low.
-
-## Limits you should know about
-
-- It reads text. A scanned PDF with no text layer returns almost nothing, and the app says so instead of scoring it low.
-- The skill list covers 72 technical skills. A role outside that list will be scored mostly on text similarity, which is the weakest part. Add skills to `data/skills.yaml` for your own roles.
-- The fairness report is only as good as the group labels people choose to give, and it needs enough people per group to say anything (default minimum is 10). A flag is a reason to look at the process, not proof of bias. A clean report is not proof of fairness.
-- The interview portal records simple facts about the session. It is not a proctoring system and it does not decide anything about the candidate.
-- Before using this on real candidates, check the privacy rules where you and the candidates are. The retention period and the consent text are defaults I picked.
-
-## What was wrong with version 1
-
-I found these when I audited the old code:
-
-- A Gmail app password was written directly in the email code. It was never pushed, because that repository had no commits, but anyone who got the folder had it.
-- The `.gitignore` was saved as UTF-16 and git could not read it, so it ignored nothing.
-- Part of the score came from a reciprocal-rank formula that was run on a list holding a single resume. That gives the same number for every resume (0.0328 here), so that part carried no information.
-- Skills came from a list of 9 words, and matching was Jaccard overlap.
-- The score moved when the name or gender in the resume changed.
-- A score above 70 shortlisted a candidate and sent them an email automatically, with no person involved.
-- The interview step used face verification through the camera. The new portal records no video and no face data.
 
 ## Layout
 
