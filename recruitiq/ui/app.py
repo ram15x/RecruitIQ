@@ -9,6 +9,10 @@ import streamlit as st
 # streamlit puts this file's folder on the path, not the project root, so add it before importing the package
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+if os.environ.get("RECRUITIQ_EMBED") == "1":
+    from recruitiq.ui.embed import start_api  # noqa: E402
+    start_api()
+
 from recruitiq.config import get_settings  # noqa: E402
 from recruitiq.ui.client import Api, ApiError  # noqa: E402
 
