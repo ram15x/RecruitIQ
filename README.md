@@ -54,9 +54,11 @@ Consent: an applicant who emails a resume has not ticked a box, so these applica
 
 With an OpenRouter key set, there are three extras: a second opinion on which skills a job text asks for, a short reviewer brief for one candidate, and a question box across all resumes for a job. They follow the same rules: a model never changes a score or suggests a decision, resume text is sent only after names, contact details and personal lines are removed, every quote the model gives must appear word for word in the resume or it is dropped, and a resume that already contains text aimed at an AI system (or hidden text) is never sent. Free OpenRouter models may keep prompts, so for real candidates use a paid model or a no-retention provider. These helpers are tested with a mocked model. I have not run them against a live model yet, so expect to tune the prompts.
 
-## Live demo
+## Try it with demo data
 
-A demo with made-up candidates is hosted on Render's free plan: https://recruitiq.onrender.com (login `demo` / `recruiter-demo-2026`). The free plan sleeps when idle, so the first load can take a minute, and the data resets whenever it restarts. Please do not upload real resumes to it. The `render.yaml` in this repo deploys the same thing. The demo includes a strong resume, a keyword-stuffed one, one with hidden instructions to the scorer, a resume that describes the right work in different words, and an unrelated one, so you can see how each is handled.
+There is no hosted copy. Start it with `RECRUITIQ_DEMO=1` and it loads made-up candidates: a strong resume, a keyword-stuffed one, one with hidden instructions to the scorer, a resume that describes the right work in different words, and an unrelated one, so you can see how each is handled. Log in as `demo` / `recruiter-demo-2026` after setting those as the bootstrap user and password (see `.env.example`).
+
+`render.yaml` deploys the API and the dashboard together on Render, and `RECRUITIQ_EMBED=1` runs both in one process on hosts that allow only one program. Render asks for a card on file even for free plans, which is why this repo does not ship a live link.
 
 ## Running it mostly on its own
 
