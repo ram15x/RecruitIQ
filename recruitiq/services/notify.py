@@ -15,11 +15,26 @@ def invite(name: str, job_title: str, when_text: str, link: str, minutes: int, g
         what = "You answer the questions by typing. Your camera and microphone are not used. "
     body = (f"Hello {name},\n\nThank you for applying for {job_title}. We would like to invite you to an interview.\n\n"
             f"When: {when_text}\nLink: {link}\n\n"
-            f"The link opens at that time and stays open for {grace} minutes after it, and you will have about {minutes} minutes once you start. "
+            f"The link opens at that time and stays open for {_span(grace)} after it, and you will have about {minutes} minutes once you start. "
             + what +
             "While you work, the page records how many times you switch tabs or paste text, and how long you take. "
             "A person reads this next to your answers, and it is not used on its own to judge you." + FOOTER)
     return f"Interview invitation: {job_title}", body
+
+
+def received(name: str, job_title: str) -> tuple[str, str]:
+    body = (f"Hello {name},\n\nThank you for applying for {job_title}. We have received your application. "
+            "Software helps us organise applications and put them in order, and a person makes every decision about it. "
+            "We will write to you again when there is news." + FOOTER)
+    return f"We received your application for {job_title}", body
+
+
+def _span(minutes: int) -> str:
+    if minutes >= 2880 and minutes % 1440 == 0:
+        return f"{minutes // 1440} days"
+    if minutes >= 120:
+        return f"{round(minutes / 60)} hours"
+    return f"{minutes} minutes"
 
 
 def decision(name: str, job_title: str, outcome: str) -> tuple[str, str]:

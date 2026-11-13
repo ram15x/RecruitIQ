@@ -37,6 +37,7 @@ class JobIn(BaseModel):
     required: list[str] | None = None
     preferred: list[str] | None = None
     min_years: float | None = Field(default=None, ge=0, le=40)
+    autopilot: dict | None = None
 
 
 class JobOut(BaseModel):
@@ -47,6 +48,7 @@ class JobOut(BaseModel):
     preferred: list[str]
     min_years: float | None
     status: str
+    autopilot: dict = {}
     created_at: dt.datetime
 
 
@@ -144,3 +146,23 @@ class AskIn(BaseModel):
 class ResearchIn(BaseModel):
     title: str = Field(min_length=2, max_length=80)
     location: str = Field(default="", max_length=60)
+
+
+class BulkDecisionIn(BaseModel):
+    application_ids: list[int] = Field(min_length=1, max_length=200)
+    decision: str
+    reason: str = Field(min_length=10, max_length=2000)
+    # the person confirms how many they are acting on, so a stale list on the screen cannot change a different number of people
+    confirm_count: int
+    send: bool = True
+    # {name} is replaced with each candidate's first name
+    subject: str | None = Field(default=None, max_length=200)
+    message: str | None = Field(default=None, max_length=4000)
+    invite: bool = False  # for accept: also create the interview with the job's autopilot interview settings
+
+    @field_validator("decision")
+    @classmethod
+    def _d(cls, v):
+        if v not in ("shortlist", "reject"):
+            raise ValueError("decision must be shortlist or reject")
+        return v

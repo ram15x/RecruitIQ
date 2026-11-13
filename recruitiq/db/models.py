@@ -39,6 +39,7 @@ class Job(Base):
     preferred: Mapped[list] = mapped_column(JSON, default=list)
     min_years: Mapped[float | None] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(String(10), default="open")
+    autopilot: Mapped[dict] = mapped_column(JSON, default=dict)  # see core/policy.py
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 

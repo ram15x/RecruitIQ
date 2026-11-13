@@ -7,7 +7,7 @@ import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.security import OAuth2PasswordRequestForm
@@ -19,6 +19,7 @@ from ..config import ROOT, Settings, get_settings
 from ..core import evidence, fairness, gaps, injection, pii
 from ..core.injection import Flag
 from ..core.jobspec import JobSpec
+from ..core.policy import Autopilot, bucket
 from ..core.scoring import Scorer
 from ..core.skills import default_ontology
 from ..db.models import Application, Candidate, Demographic, Interview, Job, Media, Notification, Org, User, now
@@ -111,7 +112,7 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
 
     def _job_out(j):
         return schemas.JobOut(id=j.id, title=j.title, description=j.description, required=j.required, preferred=j.preferred,
-                              min_years=j.min_years, status=j.status, created_at=j.created_at)
+                              min_years=j.min_years, status=j.status, autopilot=Autopilot.from_dict(j.autopilot).as_dict(), created_at=j.created_at)
 
     @app.post("/jobs/parse")
     def parse_job(body: schemas.JobIn, user: User = Depends(current_user)):
@@ -139,11 +140,28 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
     @app.post("/jobs", response_model=schemas.JobOut, status_code=201)
     def create_job(body: schemas.JobIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
         spec = JobSpec.from_text(body.title, body.description, required=body.required, preferred=body.preferred, min_years=body.min_years)
+        try:
+            pol = Autopilot.from_dict(body.autopilot)
+        except (ValueError, TypeError) as e:
+            raise HTTPException(422, str(e))
         j = Job(org_id=user.org_id, title=body.title.strip(), description=body.description, required=spec.required,
-                preferred=spec.preferred, min_years=spec.min_years, created_by=user.id)
+                preferred=spec.preferred, min_years=spec.min_years, created_by=user.id, autopilot=pol.as_dict())
         db.add(j)
         db.commit()
         audit(db, user, "job_created", "job", j.id)
+        return _job_out(j)
+
+    @app.put("/jobs/{job_id}/autopilot", response_model=schemas.JobOut)
+    def set_autopilot(job_id: int, body: dict, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        """What the software may do alone for this job. Changing it is logged. It applies to applications that arrive after the change."""
+        j = _job(db, user, job_id)
+        try:
+            pol = Autopilot.from_dict({**Autopilot.from_dict(j.autopilot).as_dict(), **body})
+        except (ValueError, TypeError) as e:
+            raise HTTPException(422, str(e))
+        j.autopilot = pol.as_dict()
+        db.commit()
+        audit(db, user, "autopilot_changed", "job", j.id, json.dumps(j.autopilot))
         return _job_out(j)
 
     @app.get("/jobs", response_model=list[schemas.JobOut])
@@ -190,7 +208,43 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         db.add(a)
         db.commit()
         audit(db, user, "application_scored", "application", a.id, f"job {job.id} score {res.score}", org_id=org_id)
+        _autopilot(db, job, a)
         return a
+
+    def _mail_ready() -> bool:
+        return bool(settings.smtp_host and settings.smtp_user and settings.smtp_password and settings.mail_from)
+
+    def _deliver(db: Session, n: Notification, actor: User | None):
+        """Send now if mail is set up. Otherwise it stays a draft, which the "needs you" list shows."""
+        if not _mail_ready():
+            n.error = "mail is not configured"
+            db.commit()
+            return
+        ok, err = _mailer(settings, n)
+        n.status, n.error = ("sent", "") if ok else ("failed", err)
+        n.sent_at = now() if ok else None
+        db.commit()
+        audit(db, actor, "notification_sent" if ok else "notification_failed", "notification", n.id, err, org_id=n.org_id)
+
+    def _autopilot(db: Session, job: Job, a: Application):
+        """Whatever the job's policy allows to happen without a person. It never rejects and never accepts after an interview.
+        A failure here must not lose the application, so it is logged and the person sees the item in their list instead."""
+        pol = Autopilot.from_dict(job.autopilot)
+        try:
+            if pol.acknowledge:
+                subject, text = notify.received(a.candidate.name, job.title)
+                n = Notification(org_id=a.org_id, application_id=a.id, to_email=a.candidate.email, subject=subject, body=text)
+                db.add(n)
+                db.commit()
+                _deliver(db, n, None)
+            if pol.auto_invite_min is not None and a.score >= pol.auto_invite_min and not a.needs_review and a.status == "scored":
+                out = _make_interview(db, a.org_id, None, a, job, now() + dt.timedelta(minutes=5), 45, pol.window_hours * 60, pol.interview_mode, pol.record_video)
+                a.decision_reason = f"Invited automatically: score {a.score} is at or above the job's line of {pol.auto_invite_min:g}, and nothing was flagged. A person still decides after the interview."
+                db.commit()
+                _deliver(db, out["notification"], None)
+        except Exception as e:  # noqa: BLE001
+            db.rollback()
+            log.warning("autopilot step failed for application %s: %s", a.id, type(e).__name__)
 
     def _app(db, user, app_id) -> Application:
         a = db.scalar(select(Application).where(Application.id == app_id, Application.org_id == user.org_id))
@@ -350,18 +404,17 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         subject, text = notify.decision(a.candidate.name, db.get(Job, a.job_id).title, "shortlisted" if decision == "shortlist" else "rejected")
         return {"to": a.candidate.email, "subject": subject, "body": text}
 
-    @app.post("/applications/{app_id}/decision")
-    def decide(app_id: int, body: schemas.DecisionIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-        a = _app(db, user, app_id)
-        a.status = {"shortlist": "shortlisted", "reject": "rejected", "hold": "on_hold"}[body.decision]
-        a.decided_by, a.decided_at, a.decision_reason = user.id, now(), body.reason.strip()
+    def _decide_one(db: Session, user: User, a: Application, decision: str, reason: str, send: bool, subject: str | None, message: str | None) -> dict:
+        a.status = {"shortlist": "shortlisted", "reject": "rejected", "hold": "on_hold"}[decision]
+        a.decided_by, a.decided_at, a.decision_reason = user.id, now(), reason.strip()
         db.commit()
-        audit(db, user, "decision", "application", a.id, body.decision)
+        audit(db, user, "decision", "application", a.id, decision)
         out = _summary(a) | {"decision_reason": a.decision_reason}
-        if body.send and body.decision in ("shortlist", "reject"):
-            subject, text = notify.decision(a.candidate.name, db.get(Job, a.job_id).title, a.status)
-            n = Notification(org_id=user.org_id, application_id=a.id, to_email=a.candidate.email, subject=(body.subject or subject).strip(),
-                             body=(body.message or text).strip(), created_by=user.id)
+        if send and decision in ("shortlist", "reject"):
+            std_subject, std_text = notify.decision(a.candidate.name, db.get(Job, a.job_id).title, a.status)
+            first = a.candidate.name.split()[0] if a.candidate.name.split() else a.candidate.name
+            n = Notification(org_id=user.org_id, application_id=a.id, to_email=a.candidate.email, subject=(subject or std_subject).replace("{name}", first).strip(),
+                             body=(message or std_text).replace("{name}", first).strip(), created_by=user.id)
             db.add(n)
             db.commit()
             ok, err = _mailer(settings, n)
@@ -371,6 +424,58 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
             audit(db, user, "notification_sent" if ok else "notification_failed", "notification", n.id, err)
             out["mail"] = {"id": n.id, "status": n.status, "error": n.error}
         return out
+
+    @app.post("/applications/{app_id}/decision")
+    def decide(app_id: int, body: schemas.DecisionIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        return _decide_one(db, user, _app(db, user, app_id), body.decision, body.reason, body.send, body.subject, body.message)
+
+    @app.post("/bulk-decision")
+    def bulk_decision(body: schemas.BulkDecisionIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        """One person, one reason, many applications. Only applications nobody has decided yet are touched, and the count has to match."""
+        if body.confirm_count != len(set(body.application_ids)):
+            raise HTTPException(409, "the number you confirmed does not match the list, so nothing was changed")
+        rows = list(db.scalars(select(Application).where(Application.id.in_(set(body.application_ids)), Application.org_id == user.org_id)))
+        skipped = len(set(body.application_ids)) - len(rows)
+        todo = [a for a in rows if a.status == "scored"]
+        skipped += len(rows) - len(todo)
+        done, mails = 0, {"sent": 0, "failed": 0}
+        for a in todo:
+            r = _decide_one(db, user, a, body.decision, body.reason, body.send, body.subject, body.message)
+            if body.decision == "shortlist" and body.invite:
+                job = db.get(Job, a.job_id)
+                pol = Autopilot.from_dict(job.autopilot)
+                out = _make_interview(db, user.org_id, user, a, job, now() + dt.timedelta(minutes=5), 45, pol.window_hours * 60, pol.interview_mode, pol.record_video)
+                _deliver(db, out["notification"], user)
+            if "mail" in r:
+                mails[r["mail"]["status"] if r["mail"]["status"] in mails else "failed"] += 1
+            done += 1
+        audit(db, user, "bulk_decision", "application", "", f"{body.decision} {done} applications")
+        return {"decided": done, "skipped_not_pending": skipped, "mail": mails}
+
+    @app.get("/todo")
+    def todo(job_id: int | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        """What needs a person right now. Everything else is being handled by the autopilot or is waiting on a candidate."""
+        jobs = {j.id: j for j in db.scalars(select(Job).where(Job.org_id == user.org_id, Job.status == "open"))}
+        out = {k: [] for k in ("flagged", "borderline", "suggested_acceptances", "suggested_rejections", "final_decision", "mail_waiting")}
+        q = select(Application).where(Application.org_id == user.org_id, Application.job_id.in_(list(jobs) or [0]))
+        if job_id:
+            q = q.where(Application.job_id == job_id)
+        for a in db.scalars(q.order_by(Application.score.desc(), Application.id)):
+            j = jobs[a.job_id]
+            item = _summary(a) | {"job_id": j.id, "job_title": j.title}
+            b = bucket(a.status, a.score, a.needs_review, Autopilot.from_dict(j.autopilot))
+            if b:
+                out[b].append(item)
+            elif a.status == "interviewed":
+                last = a.interviews[-1] if a.interviews else None
+                item["interview_id"] = last.id if last else None
+                out["final_decision"].append(item)
+        mq = select(Notification).where(Notification.org_id == user.org_id, Notification.status.in_(["draft", "failed"]), Notification.application_id.isnot(None))
+        for n in db.scalars(mq.order_by(Notification.id.desc()).limit(100)):
+            ap = db.get(Application, n.application_id)
+            if ap and ap.org_id == user.org_id and (not job_id or ap.job_id == job_id):
+                out["mail_waiting"].append({"id": n.id, "candidate_ref": ref(ap.candidate_id), "application_id": ap.id, "subject": n.subject, "status": n.status, "error": n.error})
+        return {"counts": {k: len(v) for k, v in out.items()}, "items": out, "mail_ready": _mail_ready()}
 
     @app.get("/applications/{app_id}/report.pdf")
     def pdf(app_id: int, reveal: bool = False, user: User = Depends(current_user), db: Session = Depends(get_db)):
@@ -411,12 +516,9 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         return {"id": n.id, "status": n.status, "error": n.error}
 
     # -------------------------------------------------------------- interviews
-    @app.post("/applications/{app_id}/interviews", status_code=201)
-    def schedule(app_id: int, body: schemas.InterviewIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-        a = _app(db, user, app_id)
-        if a.status not in ("shortlisted", "interview_invited"):
-            raise HTTPException(409, "an interview can only be scheduled after a person has shortlisted the application")
-        job = db.get(Job, a.job_id)
+    def _make_interview(db: Session, org_id: int, actor: User | None, a: Application, job: Job, sched: dt.datetime, duration: int, grace: int,
+                        mode: str, video: bool) -> dict:
+        """Builds the questions, creates the interview and a drafted invitation. Used by a person (schedule) and by the autopilot."""
         o = default_ontology()
         evidenced = [r["skill"] for r in a.result.get("required", []) + a.result.get("preferred", []) if r["status"] == "evidenced"]
         groups = {s: o.skills[s]["group"] for s in o.skills}
@@ -426,22 +528,32 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
             roles = [q for q in qs if q["category"] == "role"]
             for q, t in zip(roles, better):
                 q["text"] = t
-        sched = body.scheduled_at.astimezone(dt.timezone.utc)
-        ends = sched + dt.timedelta(minutes=body.grace_minutes + body.duration_minutes)
-        i = Interview(application_id=a.id, org_id=user.org_id, token_jti="pending", scheduled_at=sched, grace_minutes=body.grace_minutes,
-                      duration_minutes=body.duration_minutes, questions=qs, mode=body.mode, record_video=body.record_video and body.mode == "voice")
+        sched = sched.astimezone(dt.timezone.utc)
+        ends = sched + dt.timedelta(minutes=grace + duration)
+        video = bool(video and mode == "voice")
+        i = Interview(application_id=a.id, org_id=org_id, token_jti="pending", scheduled_at=sched, grace_minutes=grace,
+                      duration_minutes=duration, questions=qs, mode=mode, record_video=video)
         db.add(i)
         db.flush()
         token, jti = security.make_interview_token(settings.jwt_secret, i.id, ends)
         i.token_jti = jti
         a.status = "interview_invited"
         link = f"{settings.public_url.rstrip('/')}/interview/{token}"
-        subject, text = notify.invite(a.candidate.name, job.title, sched.strftime("%d %B %Y, %H:%M UTC"), link, body.duration_minutes, body.grace_minutes, body.mode, body.record_video and body.mode == "voice")
-        n = Notification(org_id=user.org_id, application_id=a.id, to_email=a.candidate.email, subject=subject, body=text, created_by=user.id)
+        subject, text = notify.invite(a.candidate.name, job.title, sched.strftime("%d %B %Y, %H:%M UTC"), link, duration, grace, mode, video)
+        n = Notification(org_id=org_id, application_id=a.id, to_email=a.candidate.email, subject=subject, body=text, created_by=actor.id if actor else None)
         db.add(n)
         db.commit()
-        audit(db, user, "interview_scheduled", "interview", i.id)
-        return {"interview_id": i.id, "link": link, "notification_id": n.id, "questions": qs}
+        audit(db, actor, "interview_scheduled" if actor else "interview_auto_invited", "interview", i.id, org_id=org_id)
+        return {"interview_id": i.id, "link": link, "notification_id": n.id, "questions": qs, "notification": n}
+
+    @app.post("/applications/{app_id}/interviews", status_code=201)
+    def schedule(app_id: int, body: schemas.InterviewIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        a = _app(db, user, app_id)
+        if a.status not in ("shortlisted", "interview_invited"):
+            raise HTTPException(409, "an interview can only be scheduled after a person has shortlisted the application")
+        out = _make_interview(db, user.org_id, user, a, db.get(Job, a.job_id), body.scheduled_at, body.duration_minutes, body.grace_minutes, body.mode, body.record_video)
+        out.pop("notification")
+        return out
 
     def _session(db, token) -> tuple[Interview, dict]:
         d = security.read_interview_token(settings.jwt_secret, token)
@@ -496,7 +608,7 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         return _state(i) | {"questions": i.questions}
 
     @app.post("/portal/{token}/submit")
-    def portal_submit(token: str, body: schemas.SubmitIn, db: Session = Depends(get_db)):
+    def portal_submit(token: str, body: schemas.SubmitIn, background: BackgroundTasks, db: Session = Depends(get_db)):
         i, _ = _session(db, token)
         st = _state(i)
         if i.status != "started" or st["state"] not in ("open",):
@@ -509,6 +621,9 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         a.status = "interviewed"
         db.commit()
         audit(db, None, "interview_completed", "interview", i.id, org_id=i.org_id)
+        job = db.get(Job, a.job_id)
+        if settings.llm_api_key and Autopilot.from_dict(job.autopilot).review_answers:
+            background.add_task(_auto_review, i.id)
         return {"state": "completed"}
 
     # ------------------------------------------------------------------- media
@@ -564,6 +679,27 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         db.commit()
         return {"saved": qid, "bytes": len(data)}
 
+    def _review(db: Session, a: Application, i: Interview) -> dict | None:
+        names = [a.candidate.name]
+        qa = [{"id": q["id"], "question": q["text"], "answer": pii.mask(i.answers.get(str(q["id"]), ""), names).text} for q in i.questions]
+        if any(f.kind in llm.UNSAFE for f in injection.scan("\n".join(x["answer"] for x in qa))):
+            return {"blocked": "An answer contains text aimed at an AI system, so no model was used. Read the answers yourself."}
+        out = llm.review_answers(settings.llm_api_key, db.get(Job, a.job_id).title, qa, models=settings.llm_models)
+        if out is not None:
+            i.analysis = {**i.analysis, "model_review": out}
+            db.commit()
+        return out
+
+    def _auto_review(interview_id: int):
+        with app.state.session_factory() as db:
+            try:
+                i = db.get(Interview, interview_id)
+                a = db.get(Application, i.application_id)
+                _review(db, a, i)
+                audit(db, None, "interview_reviewed_by_model", "interview", i.id, "automatic", org_id=i.org_id)
+            except Exception as e:  # noqa: BLE001
+                log.warning("automatic answer review failed: %s", type(e).__name__)
+
     @app.post("/applications/{app_id}/interviews/{iid}/review")
     def review_interview(app_id: int, iid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
         """A model's reading of the answers, from the text only. Stored next to the facts so a person can read both."""
@@ -573,15 +709,9 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         i = db.scalar(select(Interview).where(Interview.id == iid, Interview.application_id == a.id))
         if not i or i.status != "completed":
             raise HTTPException(409, "the interview has not been submitted")
-        names = [a.candidate.name]
-        qa = [{"id": q["id"], "question": q["text"], "answer": pii.mask(i.answers.get(str(q["id"]), ""), names).text} for q in i.questions]
-        if any(f.kind in llm.UNSAFE for f in injection.scan("\n".join(x["answer"] for x in qa))):
-            return {"blocked": "An answer contains text aimed at an AI system, so no model was used. Read the answers yourself."}
-        out = llm.review_answers(settings.llm_api_key, db.get(Job, a.job_id).title, qa, models=settings.llm_models)
+        out = _review(db, a, i)
         if out is None:
             raise HTTPException(502, "the language model did not give a usable answer, try again later")
-        i.analysis = {**i.analysis, "model_review": out}
-        db.commit()
         audit(db, user, "interview_reviewed_by_model", "interview", i.id)
         return out
 
