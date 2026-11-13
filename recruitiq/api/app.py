@@ -3,7 +3,9 @@ import base64
 import datetime as dt
 import json
 import logging
+import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,12 +16,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import ROOT, Settings, get_settings
-from ..core import evidence, fairness, gaps, pii
+from ..core import evidence, fairness, gaps, injection, pii
 from ..core.injection import Flag
 from ..core.jobspec import JobSpec
 from ..core.scoring import Scorer
 from ..core.skills import default_ontology
-from ..db.models import Application, Candidate, Demographic, Interview, Job, Notification, Org, User, now
+from ..db.models import Application, Candidate, Demographic, Interview, Job, Media, Notification, Org, User, now
 from ..db.session import make_engine, make_session_factory
 from ..services import inbox, llm, notify, report, resume_text, security
 from ..services import interview as iv
@@ -330,7 +332,7 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
                              "decided_at": a.decided_at.isoformat() if a.decided_at else None,
                              "gaps": gaps.score_gaps(a.result),
                              "what_the_scorer_saw": pii.mask(c.resume_text, [c.name]).text,
-                             "interviews": [{"id": i.id, "status": i.status, "scheduled_at": i.scheduled_at.isoformat(),
+                             "interviews": [{"id": i.id, "status": i.status, "mode": i.mode, "record_video": bool(i.record_video), "scheduled_at": i.scheduled_at.isoformat(),
                                              "questions": i.questions, "answers": i.answers if reveal else None,
                                              "analysis": i.analysis} for i in a.interviews]}
         if reveal:
@@ -427,14 +429,14 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         sched = body.scheduled_at.astimezone(dt.timezone.utc)
         ends = sched + dt.timedelta(minutes=body.grace_minutes + body.duration_minutes)
         i = Interview(application_id=a.id, org_id=user.org_id, token_jti="pending", scheduled_at=sched, grace_minutes=body.grace_minutes,
-                      duration_minutes=body.duration_minutes, questions=qs)
+                      duration_minutes=body.duration_minutes, questions=qs, mode=body.mode, record_video=body.record_video and body.mode == "voice")
         db.add(i)
         db.flush()
         token, jti = security.make_interview_token(settings.jwt_secret, i.id, ends)
         i.token_jti = jti
         a.status = "interview_invited"
         link = f"{settings.public_url.rstrip('/')}/interview/{token}"
-        subject, text = notify.invite(a.candidate.name, job.title, sched.strftime("%d %B %Y, %H:%M UTC"), link, body.duration_minutes, body.grace_minutes)
+        subject, text = notify.invite(a.candidate.name, job.title, sched.strftime("%d %B %Y, %H:%M UTC"), link, body.duration_minutes, body.grace_minutes, body.mode, body.record_video and body.mode == "voice")
         n = Notification(org_id=user.org_id, application_id=a.id, to_email=a.candidate.email, subject=subject, body=text, created_by=user.id)
         db.add(n)
         db.commit()
@@ -477,6 +479,8 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         if st["state"] in ("ready", "open"):
             out["questions"] = i.questions
             out["minutes"] = i.duration_minutes
+            out["mode"], out["record_video"] = i.mode, bool(i.record_video)
+            out["max_media_mb"] = settings.max_media_mb
         return out
 
     @app.post("/portal/{token}/start")
@@ -506,6 +510,99 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         db.commit()
         audit(db, None, "interview_completed", "interview", i.id, org_id=i.org_id)
         return {"state": "completed"}
+
+    # ------------------------------------------------------------------- media
+    MEDIA_TYPES = {"audio/webm": ("audio", b"\x1a\x45\xdf\xa3"), "video/webm": ("video", b"\x1a\x45\xdf\xa3"), "audio/ogg": ("audio", b"OggS"),
+                   "audio/mp4": ("audio", None), "video/mp4": ("video", None)}
+
+    def _media_root() -> Path:
+        p = Path(settings.media_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def _delete_media_files(db: Session, interview_ids: list[int]):
+        for m in db.scalars(select(Media).where(Media.interview_id.in_(interview_ids))) if interview_ids else []:
+            try:
+                (_media_root() / m.path).unlink(missing_ok=True)
+            except OSError:
+                log.warning("could not remove a media file")
+            db.delete(m)
+
+    @app.post("/portal/{token}/media/{qid}", status_code=201)
+    async def upload_media(token: str, qid: int, request: Request, db: Session = Depends(get_db)):
+        """A spoken answer, as audio or video, from the candidate's browser. Only while the interview is open."""
+        i, _ = _session(db, token)
+        st = _state(i)
+        if i.mode != "voice" or i.status != "started" or st["state"] != "open":
+            raise HTTPException(409, f"interview is {st['state']}")
+        if qid not in {q["id"] for q in i.questions}:
+            raise HTTPException(404, "unknown question")
+        ctype = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+        if ctype not in MEDIA_TYPES:
+            raise HTTPException(415, "unsupported recording type")
+        kind, magic = MEDIA_TYPES[ctype]
+        if kind == "video" and not i.record_video:
+            raise HTTPException(409, "this interview does not record video")
+        limit = settings.max_media_mb * 1_000_000
+        data = bytearray()
+        async for chunk in request.stream():
+            data += chunk
+            if len(data) > limit:
+                raise HTTPException(413, f"recording is larger than {settings.max_media_mb} MB")
+        if not data or (magic and bytes(data[:len(magic)]) != magic) or (magic is None and b"ftyp" not in bytes(data[:16])):
+            raise HTTPException(422, "that does not look like a recording")
+        name = f"{i.org_id}/{i.id}_{qid}_{secrets.token_hex(6)}.{'webm' if 'webm' in ctype else 'ogg' if 'ogg' in ctype else 'mp4'}"
+        path = _media_root() / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(bytes(data))
+        old = db.scalar(select(Media).where(Media.interview_id == i.id, Media.question_id == qid))
+        if old:
+            (_media_root() / old.path).unlink(missing_ok=True)
+            db.delete(old)
+            db.flush()
+        db.add(Media(interview_id=i.id, org_id=i.org_id, question_id=qid, kind=kind, mime=ctype, size=len(data), path=name))
+        db.commit()
+        return {"saved": qid, "bytes": len(data)}
+
+    @app.post("/applications/{app_id}/interviews/{iid}/review")
+    def review_interview(app_id: int, iid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        """A model's reading of the answers, from the text only. Stored next to the facts so a person can read both."""
+        if not settings.llm_api_key:
+            raise HTTPException(400, "no language model key is set")
+        a = _app(db, user, app_id)
+        i = db.scalar(select(Interview).where(Interview.id == iid, Interview.application_id == a.id))
+        if not i or i.status != "completed":
+            raise HTTPException(409, "the interview has not been submitted")
+        names = [a.candidate.name]
+        qa = [{"id": q["id"], "question": q["text"], "answer": pii.mask(i.answers.get(str(q["id"]), ""), names).text} for q in i.questions]
+        if any(f.kind in llm.UNSAFE for f in injection.scan("\n".join(x["answer"] for x in qa))):
+            return {"blocked": "An answer contains text aimed at an AI system, so no model was used. Read the answers yourself."}
+        out = llm.review_answers(settings.llm_api_key, db.get(Job, a.job_id).title, qa, models=settings.llm_models)
+        if out is None:
+            raise HTTPException(502, "the language model did not give a usable answer, try again later")
+        i.analysis = {**i.analysis, "model_review": out}
+        db.commit()
+        audit(db, user, "interview_reviewed_by_model", "interview", i.id)
+        return out
+
+    @app.get("/applications/{app_id}/interviews/{iid}/media")
+    def list_media(app_id: int, iid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        _app(db, user, app_id)
+        rows = db.scalars(select(Media).where(Media.interview_id == iid, Media.org_id == user.org_id).order_by(Media.question_id))
+        return [{"question_id": m.question_id, "kind": m.kind, "mime": m.mime, "size": m.size} for m in rows]
+
+    @app.get("/applications/{app_id}/interviews/{iid}/media/{qid}")
+    def get_media(app_id: int, iid: int, qid: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        """For a person to watch or listen. Each play is logged."""
+        _app(db, user, app_id)
+        m = db.scalar(select(Media).where(Media.interview_id == iid, Media.question_id == qid, Media.org_id == user.org_id))
+        if not m:
+            raise HTTPException(404, "no recording")
+        f = _media_root() / m.path
+        if not f.is_file():
+            raise HTTPException(404, "the recording file is gone")
+        audit(db, user, "media_viewed", "interview", iid, f"question {qid}")
+        return Response(f.read_bytes(), media_type=m.mime, headers={"Cache-Control": "no-store"})
 
     # ---------------------------------------------------------------- fairness
     @app.put("/applications/{app_id}/demographic")
@@ -540,6 +637,7 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         c = db.scalar(select(Candidate).where(Candidate.id == cid, Candidate.org_id == admin.org_id))
         if not c:
             raise HTTPException(404, "candidate not found")
+        _delete_media_files(db, [i.id for ap in c.applications for i in ap.interviews])
         db.delete(c)
         db.commit()
         audit(db, admin, "candidate_erased", "candidate", cid)
@@ -549,6 +647,7 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
     def purge(admin: User = Depends(admin_only), db: Session = Depends(get_db)):
         old = list(db.scalars(select(Candidate).where(Candidate.org_id == admin.org_id, Candidate.retention_until < now())))
         for c in old:
+            _delete_media_files(db, [i.id for ap in c.applications for i in ap.interviews])
             db.delete(c)
         db.commit()
         audit(db, admin, "retention_purge", "candidate", "", f"{len(old)} removed")

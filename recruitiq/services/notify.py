@@ -5,11 +5,18 @@ FOOTER = ("\n\nIf you would like a person to review this again, or you want your
           "reply to this email and we will do that.")
 
 
-def invite(name: str, job_title: str, when_text: str, link: str, minutes: int, grace: int) -> tuple[str, str]:
-    body = (f"Hello {name},\n\nThank you for applying for {job_title}. We would like to invite you to a written interview.\n\n"
+def invite(name: str, job_title: str, when_text: str, link: str, minutes: int, grace: int, mode: str = "written", video: bool = False) -> tuple[str, str]:
+    if mode == "voice":
+        what = ("The questions are read aloud and you answer by speaking. Your microphone is used" + (" and your camera is switched on" if video else "") +
+                ", and your answers are recorded so a person can listen" + (" and watch" if video else "") + " to them. "
+                "You can type your answers instead if you prefer, or if speaking is hard for you, and that is never held against you. "
+                "Nothing you say or show is scored by software, and no software tries to judge your face or voice. ")
+    else:
+        what = "You answer the questions by typing. Your camera and microphone are not used. "
+    body = (f"Hello {name},\n\nThank you for applying for {job_title}. We would like to invite you to an interview.\n\n"
             f"When: {when_text}\nLink: {link}\n\n"
             f"The link opens at that time and stays open for {grace} minutes after it, and you will have about {minutes} minutes once you start. "
-            "You answer the questions by typing. Your camera and microphone are not used.\n"
+            + what +
             "While you work, the page records how many times you switch tabs or paste text, and how long you take. "
             "A person reads this next to your answers, and it is not used on its own to judge you." + FOOTER)
     return f"Interview invitation: {job_title}", body

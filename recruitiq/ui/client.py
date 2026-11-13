@@ -52,6 +52,9 @@ class Api:
     def compare(self, jid, a, b): return self._req("GET", f"/jobs/{jid}/compare", params={"a": a, "b": b}).json()
     def export(self, jid, reveal=False): return self._req("GET", f"/jobs/{jid}/export.xlsx", params={"reveal": reveal}).content
     def research(self, title, location=""): return self._req("POST", "/jobs/research", json={"title": title, "location": location}).json()
+    def media_list(self, aid, iid): return self._req("GET", f"/applications/{aid}/interviews/{iid}/media").json()
+    def media(self, aid, iid, qid): return self._req("GET", f"/applications/{aid}/interviews/{iid}/media/{qid}").content
+    def review(self, aid, iid): return self._req("POST", f"/applications/{aid}/interviews/{iid}/review").json()
     def caps(self): return self._req("GET", "/capabilities").json()
     def brief(self, aid): return self._req("POST", f"/applications/{aid}/brief").json()
     def ask(self, jid, q): return self._req("POST", f"/jobs/{jid}/ask", json={"question": q}).json()

@@ -17,6 +17,8 @@ class Settings:
     cors_origins: list = field(default_factory=lambda: [o for o in os.environ.get("RECRUITIQ_CORS_ORIGINS", "").split(",") if o])
     webhook_secret: str = field(default_factory=lambda: os.environ.get("RECRUITIQ_WEBHOOK_SECRET", ""))
     retention_days: int = field(default_factory=lambda: int(os.environ.get("RECRUITIQ_RETENTION_DAYS", "180")))
+    media_dir: str = field(default_factory=lambda: os.environ.get("RECRUITIQ_MEDIA_DIR", str(ROOT / "media")))
+    max_media_mb: int = field(default_factory=lambda: int(os.environ.get("RECRUITIQ_MAX_MEDIA_MB", "15")))
     max_upload_mb: int = field(default_factory=lambda: int(os.environ.get("RECRUITIQ_MAX_UPLOAD_MB", "5")))
     # first admin, only used when there are no users yet
     bootstrap_user: str = field(default_factory=lambda: os.environ.get("RECRUITIQ_BOOTSTRAP_USER", ""))

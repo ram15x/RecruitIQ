@@ -3,42 +3,67 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Written interview</title>
+<title>Interview</title>
 <style>
   body { font: 16px/1.55 system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #1d2330; }
-  main { max-width: 760px; margin: 0 auto; padding: 28px 20px 60px; }
+  main { max-width: 780px; margin: 0 auto; padding: 28px 20px 60px; }
   h1 { font-size: 1.5rem; margin: 0 0 6px; }
   .card { background: #fff; border: 1px solid #dfe3ea; border-radius: 10px; padding: 18px 20px; margin: 16px 0; }
   .muted { color: #5b6577; font-size: .92rem; }
-  textarea { width: 100%; min-height: 150px; box-sizing: border-box; font: inherit; padding: 10px; border: 1px solid #c4cad6; border-radius: 8px; }
-  button { font: inherit; padding: 10px 18px; border-radius: 8px; border: 0; background: #1f4fd8; color: #fff; cursor: pointer; }
+  textarea { width: 100%; min-height: 130px; box-sizing: border-box; font: inherit; padding: 10px; border: 1px solid #c4cad6; border-radius: 8px; }
+  select { font: inherit; padding: 6px; }
+  button { font: inherit; padding: 9px 16px; border-radius: 8px; border: 0; background: #1f4fd8; color: #fff; cursor: pointer; margin: 4px 6px 4px 0; }
+  button.alt { background: #e8ebf2; color: #1d2330; }
+  button.rec { background: #c62828; }
   button[disabled] { background: #9aa6c6; cursor: default; }
-  #timer { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #dfe3ea; padding: 8px 20px; text-align: right; font-variant-numeric: tabular-nums; }
+  #timer { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #dfe3ea; padding: 8px 20px; text-align: right; font-variant-numeric: tabular-nums; z-index: 2; }
   .hidden { display: none; }
+  .meter { height: 12px; background: #e8ebf2; border-radius: 6px; overflow: hidden; margin: 8px 0; }
+  .meter > div { height: 100%; width: 0; background: #2e7d32; transition: width .08s; }
+  video { width: 220px; border-radius: 8px; background: #000; }
+  #cam { position: fixed; right: 14px; bottom: 14px; z-index: 3; box-shadow: 0 2px 10px rgba(0,0,0,.3); }
+  .ok { color: #2e7d32; } .bad { color: #c62828; }
 </style>
 </head>
 <body>
 <div id="timer" class="hidden"></div>
 <main>
-  <h1>Written interview</h1>
+  <h1>Interview</h1>
   <p class="muted" id="status">Checking your link...</p>
 
   <div id="intro" class="card hidden">
-    <p>You will answer a few questions by typing. There is no camera or microphone, and nothing is recorded except what is listed here.</p>
-    <p><strong>What this page records:</strong> your answers, how many times you switch to another tab, how many times you paste text, and how long you take.
+    <div id="introWritten">
+      <p>You will answer a few questions by typing. There is no camera or microphone, and nothing is recorded except what is listed here.</p>
+    </div>
+    <div id="introVoice" class="hidden">
+      <p>The questions can be read aloud to you, and you can answer by speaking. You can also type any answer, or every answer, and that is never held against you.</p>
+      <p><strong>If you speak:</strong> your answer is recorded as <span id="kindWord">audio</span> so that a person can listen<span id="watchWord"></span> to it. Your browser may turn your speech into text on the screen. In Chrome and Edge that is done by a speech service run by Google or Microsoft, and you can correct the text before you submit. No software scores your voice, face or accent, and nothing is judged automatically.</p>
+      <p>
+        <button id="micTest" class="alt">Test my microphone</button> <span id="micMsg" class="muted"></span>
+      </p>
+      <div class="meter"><div id="level"></div></div>
+      <label><input type="checkbox" id="consent"> I understand my spoken answers will be recorded for a person to review, and I agree.</label>
+      <p class="muted">Prefer not to be recorded? Leave the box empty and press "Start by typing only".</p>
+      <label class="muted">Speech language <select id="lang"></select></label>
+    </div>
+    <p><strong>What this page also records:</strong> your answers, how many times you switch to another tab, how many times you paste text, and how long you take.
        A person reads these next to your answers. They are not used on their own to judge you, and you can ask for your data to be deleted at any time.</p>
-    <p class="muted">You can answer in your own words and in any style. Short, specific answers about your real work are better than long general ones.</p>
+    <p class="muted">Short, specific answers about your real work are better than long general ones.</p>
     <button id="start">Start the interview</button>
+    <button id="startText" class="alt hidden">Start by typing only</button>
   </div>
 
   <div id="quiz" class="hidden"></div>
   <div id="done" class="card hidden"><strong>Thank you.</strong> Your answers have been sent. You can close this page.</div>
 </main>
+<video id="cam" class="hidden" muted playsinline></video>
 <script>
 const token = location.pathname.split("/").filter(Boolean).pop();
 const $ = id => document.getElementById(id);
 const api = p => `/portal/${token}${p}`;
 let signals = { tab_switches: 0, paste_events: 0 }, startedAt = Date.now(), deadline = null, timerId = null;
+let session = null, stream = null, recordingAllowed = false, recorder = null, recQ = null, recChunks = [], recTimer = null, recog = null;
+const MAX_REC_SECONDS = 150;
 
 document.addEventListener("visibilitychange", () => { if (document.hidden) signals.tab_switches++; });
 document.addEventListener("paste", () => { signals.paste_events++; });
@@ -54,32 +79,166 @@ async function load() {
   if (s.state === "expired") { show("This interview window has closed. Please contact the recruiter if you need a new time."); return; }
   if (s.state === "completed") { show("This interview has already been submitted."); return; }
   if (s.state === "cancelled") { show("This interview was cancelled."); return; }
+  session = s;
   show(`You have ${s.minutes} minutes once you start.`);
+  if (s.mode === "voice") setupVoiceIntro();
   if (s.state === "open") { begin(s); } else { $("intro").classList.remove("hidden"); }
 }
 
+// ---------------------------------------------------------------- voice setup
+function setupVoiceIntro() {
+  $("introWritten").classList.add("hidden");
+  $("introVoice").classList.remove("hidden");
+  $("startText").classList.remove("hidden");
+  if (session.record_video) { $("kindWord").textContent = "audio and video"; $("watchWord").textContent = " and watch"; }
+  const langs = [["en-IN", "English (India)"], ["en-US", "English (US)"], ["en-GB", "English (UK)"], ["hi-IN", "Hindi"], ["ta-IN", "Tamil"], ["te-IN", "Telugu"], ["es-ES", "Spanish"], ["fr-FR", "French"]];
+  const sel = $("lang");
+  langs.forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.appendChild(o); });
+  const mine = navigator.language; if (langs.some(l => l[0] === mine)) sel.value = mine;
+}
+
+async function getStream() {
+  if (stream) return stream;
+  stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: !!(session && session.record_video) });
+  if (session && session.record_video) { const v = $("cam"); v.srcObject = stream; v.classList.remove("hidden"); v.play().catch(() => {}); }
+  return stream;
+}
+
+$("micTest").onclick = async () => {
+  try {
+    const s = await getStream();
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const an = ctx.createAnalyser(); an.fftSize = 512;
+    ctx.createMediaStreamSource(new MediaStream(s.getAudioTracks())).connect(an);
+    const buf = new Uint8Array(an.fftSize);
+    let heard = false;
+    $("micMsg").textContent = "Say a few words. The bar should move.";
+    const loop = () => {
+      an.getByteTimeDomainData(buf);
+      let peak = 0; for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+      $("level").style.width = Math.min(100, peak * 1.6) + "%";
+      if (peak > 12 && !heard) { heard = true; $("micMsg").textContent = "Your microphone works."; $("micMsg").className = "ok"; }
+      requestAnimationFrame(loop);
+    };
+    loop();
+  } catch (e) {
+    $("micMsg").textContent = "Could not use the microphone. You can still answer by typing.";
+    $("micMsg").className = "bad";
+  }
+};
+
 $("start").onclick = async () => {
+  recordingAllowed = session && session.mode === "voice" && $("consent") && $("consent").checked;
+  if (session && session.mode === "voice" && !recordingAllowed) { show("Please tick the box to be recorded, or press \"Start by typing only\"."); return; }
+  if (recordingAllowed) { try { await getStream(); } catch (e) { recordingAllowed = false; show("Could not use the microphone, so you will answer by typing."); } }
+  await go();
+};
+$("startText").onclick = async () => { recordingAllowed = false; if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; $("cam").classList.add("hidden"); } await go(); };
+
+async function go() {
   const r = await fetch(api("/start"), { method: "POST" });
   if (!r.ok) { show("Could not start. The window may have closed."); return; }
   begin(await r.json());
-};
+}
 
+// ---------------------------------------------------------------- the interview
 function begin(s) {
+  if (s.mode && !session) session = s;
   $("intro").classList.add("hidden");
   startedAt = Date.now();
   deadline = Date.now() + s.seconds_left * 1000;
   $("timer").classList.remove("hidden");
   timerId = setInterval(tick, 500); tick();
   const quiz = $("quiz"); quiz.classList.remove("hidden"); quiz.innerHTML = "";
+  const voice = session && session.mode === "voice";
   (s.questions || []).forEach(q => {
     const d = document.createElement("div"); d.className = "card";
-    d.innerHTML = `<p><strong>${q.id}.</strong> </p><textarea data-id="${q.id}" maxlength="5000"></textarea>`;
-    d.querySelector("p").append(document.createTextNode(q.text));   // text node, never innerHTML, for server-supplied text
+    const p = document.createElement("p");
+    const b = document.createElement("strong"); b.textContent = q.id + ". "; p.appendChild(b);
+    p.appendChild(document.createTextNode(q.text));   // text node, never innerHTML, for server-supplied text
+    d.appendChild(p);
+    if (voice) {
+      const say = document.createElement("button"); say.className = "alt"; say.textContent = "Read the question aloud";
+      say.onclick = () => speak(q.text);
+      d.appendChild(say);
+      if (recordingAllowed) {
+        const rec = document.createElement("button"); rec.textContent = "Record my answer"; rec.dataset.q = q.id;
+        rec.onclick = () => toggleRecord(q.id, rec, d);
+        d.appendChild(rec);
+        const st = document.createElement("span"); st.className = "muted"; st.dataset.status = q.id; d.appendChild(st);
+      }
+    }
+    const lab = document.createElement("div"); lab.className = "muted";
+    lab.textContent = voice && recordingAllowed ? "Your answer. What you say appears here. You can fix any words the computer got wrong, or just type." : "Your answer";
+    d.appendChild(lab);
+    const ta = document.createElement("textarea"); ta.dataset.id = q.id; ta.maxLength = 5000; d.appendChild(ta);
     quiz.appendChild(d);
   });
   const b = document.createElement("button"); b.textContent = "Submit answers"; b.onclick = submit; quiz.appendChild(b);
   show("");
 }
+
+function speak(text) {
+  if (!("speechSynthesis" in window)) { show("Your browser cannot read aloud. The question is on the screen."); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text); u.lang = ($("lang") && $("lang").value) || navigator.language || "en-US"; u.rate = 0.95;
+  speechSynthesis.speak(u);
+}
+
+function pickMime() {
+  const video = session && session.record_video;
+  const options = video ? ["video/webm;codecs=vp8,opus", "video/webm", "video/mp4"] : ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+  return options.find(m => window.MediaRecorder && MediaRecorder.isTypeSupported(m)) || "";
+}
+
+async function toggleRecord(qid, btn, card) {
+  const statusEl = card.querySelector(`[data-status="${qid}"]`);
+  if (recorder && recQ === qid) { recorder.stop(); return; }
+  if (recorder) { return; }   // one recording at a time
+  if (!stream) { try { await getStream(); } catch (e) { statusEl.textContent = " No microphone. Please type your answer."; return; } }
+  const mime = pickMime();
+  if (!mime) { statusEl.textContent = " Recording is not supported in this browser. Please type your answer."; return; }
+  speechSynthesis && speechSynthesis.cancel();
+  recChunks = []; recQ = qid;
+  const track = new MediaStream(session.record_video ? stream.getTracks() : stream.getAudioTracks());
+  recorder = new MediaRecorder(track, { mimeType: mime });
+  recorder.ondataavailable = e => { if (e.data.size) recChunks.push(e.data); };
+  recorder.onstop = async () => {
+    clearTimeout(recTimer); stopRecognition();
+    btn.textContent = "Record again"; btn.className = "";
+    const blob = new Blob(recChunks, { type: mime });
+    const base = mime.split(";")[0];
+    statusEl.textContent = " Saving...";
+    try {
+      const r = await fetch(api(`/media/${qid}`), { method: "POST", headers: { "Content-Type": base }, body: blob });
+      statusEl.textContent = r.ok ? " Saved. You can record again to replace it." : " Could not save the recording. Your typed text will still be sent.";
+    } catch (e) { statusEl.textContent = " Could not save the recording. Your typed text will still be sent."; }
+    recorder = null; recQ = null;
+  };
+  recorder.start();
+  btn.textContent = "Stop"; btn.className = "rec"; statusEl.textContent = " Recording...";
+  startRecognition(card.querySelector("textarea"));
+  recTimer = setTimeout(() => { if (recorder) recorder.stop(); }, MAX_REC_SECONDS * 1000);
+}
+
+function startRecognition(ta) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return;
+  recog = new SR(); recog.continuous = true; recog.interimResults = true; recog.lang = $("lang").value || navigator.language || "en-US";
+  const base = ta.value ? ta.value.trimEnd() + " " : "";
+  let finalText = "";
+  recog.onresult = e => {
+    let interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalText += t + " "; else interim += t;
+    }
+    ta.value = (base + finalText + interim).trim();
+  };
+  recog.onend = () => { if (recorder) { try { recog.start(); } catch (e) {} } };   // keeps listening through short pauses
+  try { recog.start(); } catch (e) {}
+}
+function stopRecognition() { if (recog) { const r = recog; recog = null; r.onend = null; try { r.stop(); } catch (e) {} } }
 
 function tick() {
   const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
@@ -88,13 +247,16 @@ function tick() {
 }
 
 async function submit() {
+  if (recorder) { recorder.stop(); await new Promise(r => setTimeout(r, 1200)); }   // let the last recording upload first
   const answers = {};
   document.querySelectorAll("textarea").forEach(t => answers[t.dataset.id] = t.value);
   signals.seconds_total = Math.round((Date.now() - startedAt) / 1000);
   document.querySelectorAll("button").forEach(b => b.disabled = true);
   const r = await fetch(api("/submit"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ answers, signals }) });
-  if (r.ok) { clearInterval(timerId); $("quiz").classList.add("hidden"); $("timer").classList.add("hidden"); $("done").classList.remove("hidden"); show(""); }
-  else { show("Could not submit. Copy your answers somewhere safe and try again in a moment."); document.querySelectorAll("button").forEach(b => b.disabled = false); }
+  if (r.ok) {
+    clearInterval(timerId); if (stream) stream.getTracks().forEach(t => t.stop());
+    $("quiz").classList.add("hidden"); $("timer").classList.add("hidden"); $("cam").classList.add("hidden"); $("done").classList.remove("hidden"); show("");
+  } else { show("Could not submit. Copy your answers somewhere safe and try again in a moment."); document.querySelectorAll("button").forEach(b => b.disabled = false); }
 }
 load();
 </script>

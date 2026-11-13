@@ -93,6 +93,8 @@ class Interview(Base):
     grace_minutes: Mapped[int] = mapped_column(default=15)
     duration_minutes: Mapped[int] = mapped_column(default=45)
     status: Mapped[str] = mapped_column(String(12), default="scheduled")  # scheduled | started | completed | cancelled
+    mode: Mapped[str] = mapped_column(String(10), default="written")  # written | voice
+    record_video: Mapped[bool] = mapped_column(default=False)
     questions: Mapped[list] = mapped_column(JSON, default=list)
     answers: Mapped[dict] = mapped_column(JSON, default=dict)
     signals: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -100,6 +102,21 @@ class Interview(Base):
     started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     application: Mapped[Application] = relationship(back_populates="interviews")
+
+
+class Media(Base):
+    """An audio or video answer. Played back by a person, never analysed by software. Deleted with the candidate."""
+    __tablename__ = "media"
+    __table_args__ = (UniqueConstraint("interview_id", "question_id", name="uq_media_interview_question"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    interview_id: Mapped[int] = mapped_column(ForeignKey("interviews.id"), index=True)
+    org_id: Mapped[int] = mapped_column(Integer, index=True)
+    question_id: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(6))  # audio | video
+    mime: Mapped[str] = mapped_column(String(40))
+    size: Mapped[int] = mapped_column(Integer)
+    path: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class Demographic(Base):

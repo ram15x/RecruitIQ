@@ -325,16 +325,51 @@ def detail(aid):
             day = st.date_input("Date", dt.date.today() + dt.timedelta(days=2))
             tm = st.time_input("Time (UTC)", dt.time(10, 0))
             mins = st.number_input("Minutes allowed", 10, 180, 45)
+            mode = st.radio("Format", ["written", "voice"], horizontal=True, format_func=lambda m: "Typed answers" if m == "written" else "Voice: questions read aloud, spoken answers (typing always allowed)")
+            video = st.checkbox("Also record video (voice format only). The candidate is told and has to agree.", value=False)
             if st.form_submit_button("Create the interview link"):
                 when = dt.datetime.combine(day, tm, tzinfo=dt.timezone.utc).isoformat()
-                r = run(api().schedule, aid, {"scheduled_at": when, "duration_minutes": int(mins)})
+                r = run(api().schedule, aid, {"scheduled_at": when, "duration_minutes": int(mins), "mode": mode, "record_video": bool(video and mode == "voice")})
                 if r:
                     st.success("Link created. The invitation is a draft until you send it.")
                     st.code(r["link"])
     for i in a["interviews"]:
-        if i["analysis"]:
-            with st.expander(f"Interview {i['id']}: {i['status']}"):
-                st.json(i["analysis"])
+        if i["status"] != "completed":
+            continue
+        with st.expander(f"Interview {i['id']}: {i['status']} ({i['mode']})"):
+            qa = {str(q["id"]): q for q in i["questions"]}
+            if not reveal:
+                st.caption("Turn on \"Show name and email\" above to read the answers and play recordings. This is logged.")
+            else:
+                for qid, q in qa.items():
+                    st.markdown(f"**{q['id']}. {q['text']}**")
+                    st.write((i["answers"] or {}).get(qid) or "_no answer_")
+                if i["mode"] == "voice":
+                    st.caption("Recordings are for a person to watch and listen to. Nothing analyses voice or face.")
+                    have = {m["question_id"]: m for m in run(api().media_list, aid, i["id"]) or []}
+                    for qid in qa:
+                        m = have.get(int(qid))
+                        if m and st.button(f"Load the recording for question {qid}", key=f"m{i['id']}_{qid}"):
+                            data = run(api().media, aid, i["id"], int(qid))
+                            if data:
+                                (st.video if m["kind"] == "video" else st.audio)(data, format=m["mime"])
+            st.markdown("**Facts about the answers**")
+            st.json(i["analysis"].get("answers", []))
+            st.json(i["analysis"].get("signals", {}))
+            if caps().get("llm"):
+                if st.button("Have a language model read the answers (text only)", key=f"rv{i['id']}"):
+                    r = run(api().review, aid, i["id"])
+                    if r and r.get("blocked"):
+                        st.warning(r["blocked"])
+                    elif r:
+                        st.caption(r["note"])
+                        for v in r["reviews"]:
+                            st.markdown(f"Q{v['question_id']}: relevance **{v['relevance']}**, specificity **{v['specificity']}**, reasoning **{v['reasoning']}**. {v['explanation']}" + (f"\n> {v['quote']}" if v["quote"] else ""))
+                mr = i["analysis"].get("model_review")
+                if mr and not st.session_state.get(f"shown{i['id']}"):
+                    st.caption("Saved review: " + mr["note"])
+                    for v in mr["reviews"]:
+                        st.markdown(f"Q{v['question_id']}: relevance **{v['relevance']}**, specificity **{v['specificity']}**, reasoning **{v['reasoning']}**. {v['explanation']}")
     with st.expander("Voluntary self-reported group (used only for the fairness report)"):
         g = st.text_input("Group label", key=f"grp{aid}")
         if st.button("Save", key=f"grps{aid}") and g:

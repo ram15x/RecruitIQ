@@ -11,3 +11,4 @@ credentials/
 *.json.key
 _old-version/
 _old-version-*/
+media/

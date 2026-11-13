@@ -79,6 +79,16 @@ class InterviewIn(BaseModel):
     scheduled_at: dt.datetime
     duration_minutes: int = Field(default=45, ge=10, le=180)
     grace_minutes: int = Field(default=15, ge=0, le=120)
+    # voice: questions are read aloud and answers are spoken (and can always be typed instead). record_video adds the camera
+    mode: str = "written"
+    record_video: bool = False
+
+    @field_validator("mode")
+    @classmethod
+    def _mode(cls, v):
+        if v not in ("written", "voice"):
+            raise ValueError("mode must be written or voice")
+        return v
 
     @field_validator("scheduled_at")
     @classmethod

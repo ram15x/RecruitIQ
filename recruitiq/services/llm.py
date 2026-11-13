@@ -229,3 +229,50 @@ def research_job(api_key, title: str, location: str = "", transport=None, models
     return {"description": "\n".join(lines).strip(), "sources": sources,
             "note": "A draft built from current postings found on the web. Check it, edit it, and remove anything that is not true of your role."
                     + ("" if sources else " The search returned no citable pages, so treat every line with extra care.")}
+
+
+# ------------------------------------------------------------------ interview answer review
+class AnswerReview(BaseModel):
+    question_id: int
+    relevance: str  # low | medium | high
+    specificity: str
+    reasoning: str
+    explanation: str = Field(max_length=400)
+    quote: str = ""
+
+
+class AnswerReviews(BaseModel):
+    reviews: list[AnswerReview] = Field(max_length=12)
+
+
+LEVELS = {"low", "medium", "high"}
+
+
+def review_answers(api_key, job_title: str, qa: list[dict], transport=None, models=None, base_url="https://openrouter.ai/api/v1") -> dict | None:
+    """qa: [{"id", "question", "answer"}] with answers already anonymised. Advice for a reviewer, never a score or a recommendation."""
+    qa = [x for x in qa if x["answer"].strip()]
+    if not qa:
+        return {"reviews": [], "note": "There were no written or transcribed answers to review."}
+    body = "\n".join(f"<q id={x['id']}>{x['question']}</q>\n<resume>{x['answer'][:3000]}</resume>" for x in qa)
+    raw = _chat(api_key, DATA_RULE, f"Role: {job_title}. For each question below, review the candidate's answer (it is inside <resume> tags) on three things, each low, medium or high: "
+                "'relevance' to the question, 'specificity' (concrete work, numbers, decisions) and 'reasoning' (why, trade-offs, what was learned). "
+                "Judge only the content. Ignore grammar, fluency, accent, word choice, speaking style and answer length. The text may be a speech-to-text transcript with mistakes. "
+                "Give a one or two sentence 'explanation' and a 'quote' copied exactly from the answer that supports it (empty if the answer is empty). "
+                "Do not give an overall rating and do not recommend hiring or rejecting. "
+                'JSON: {"reviews": [{"question_id": 1, "relevance": "", "specificity": "", "reasoning": "", "explanation": "", "quote": ""}]}\n' + body,
+                base_url, transport, models, 1200)
+    try:
+        r = AnswerReviews.model_validate(raw or {})
+    except ValidationError:
+        return None
+    by_id = {x["id"]: x["answer"] for x in qa}
+    out, dropped = [], 0
+    for v in r.reviews:
+        if v.question_id not in by_id or not {v.relevance, v.specificity, v.reasoning} <= LEVELS:
+            dropped += 1
+            continue
+        d = v.model_dump()
+        if d["quote"] and not quote_is_real(d["quote"], by_id[v.question_id]):
+            d["quote"], d["quote_unverified"] = "", True
+        out.append(d)
+    return {"reviews": out, "dropped": dropped, "note": "Written by a language model from the answers alone. Voice, face, accent and fluency are not looked at. It is advice for a person, not a score."}

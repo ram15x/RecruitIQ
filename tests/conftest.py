@@ -35,7 +35,7 @@ Looked after twelve inpatients per shift, gave scheduled medication and kept acc
 @pytest.fixture()
 def settings(tmp_path):
     return Settings(db_url=f"sqlite:///{tmp_path / 't.db'}", jwt_secret="test-secret-0123456789abcdef-0123456789",
-                    bootstrap_user=BOOT[0], bootstrap_password=BOOT[1], webhook_secret="hook-secret", public_url="http://testserver")
+                    bootstrap_user=BOOT[0], bootstrap_password=BOOT[1], webhook_secret="hook-secret", public_url="http://testserver", media_dir=str(tmp_path / "media"))
 
 
 @pytest.fixture()
