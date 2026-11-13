@@ -2,7 +2,6 @@
 
 RecruitIQ helps a recruiter get through a pile of resumes without handing the decision to a model. It reads each resume against a job, gives it a score that can be fully explained, shows the lines of the resume that back each skill up, and then stops. A person has to write down a reason before anyone is shortlisted or rejected.
 
-I first built this as an internship project in 2025. That version worked, but when I went back to it I found it was hard to trust, so this is a rewrite rather than a clean-up. The section "What was wrong with version 1" says what I found.
 
 ## What it does
 
