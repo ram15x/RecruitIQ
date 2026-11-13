@@ -21,6 +21,8 @@ class Settings:
     # first admin, only used when there are no users yet
     bootstrap_user: str = field(default_factory=lambda: os.environ.get("RECRUITIQ_BOOTSTRAP_USER", ""))
     bootstrap_password: str = field(default_factory=lambda: os.environ.get("RECRUITIQ_BOOTSTRAP_PASSWORD", ""))
+    # hosted demo: loads made-up sample candidates into an empty database and shows a notice in the dashboard
+    demo: bool = field(default_factory=lambda: os.environ.get("RECRUITIQ_DEMO", "") == "1")
     # outgoing mail. empty means notifications can be drafted but not sent
     smtp_host: str = field(default_factory=lambda: os.environ.get("SMTP_HOST", ""))
     smtp_port: int = field(default_factory=lambda: int(os.environ.get("SMTP_PORT", "465")))

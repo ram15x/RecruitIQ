@@ -1,4 +1,5 @@
 import datetime as dt
+import os
 import sys
 from pathlib import Path
 
@@ -36,9 +37,21 @@ def run(fn, *a, **kw):
     return None
 
 
+def demo_on() -> bool:
+    try:
+        return bool(api().health().get("demo"))
+    except Exception:
+        return False
+
+
 def login_screen():
     st.title("RecruitIQ")
     st.caption("Resume screening where a person makes every decision")
+    if demo_on():
+        st.info("This is a demo with made-up candidates. "
+                "Please do not upload real resumes here. The data resets when the server restarts.")
+        if os.environ.get("RECRUITIQ_DEMO_HINT"):
+            st.success(os.environ["RECRUITIQ_DEMO_HINT"])
     with st.form("login"):
         u = st.text_input("Username")
         p = st.text_input("Password", type="password")
@@ -133,8 +146,44 @@ def page_candidates():
     df = pd.DataFrame([{"id": r["id"], "ref": r["candidate_ref"], "score": r["score"], "band": r["band"], "status": r["status"],
                         "closer look": "yes" if r["needs_review"] else "", "flags": r["flags"]} for r in rows])
     st.dataframe(df, hide_index=True, width="stretch")
+    pool_search(job["id"])
+    compare_box(job["id"], rows)
     aid = st.selectbox("Open application", [r["id"] for r in rows], format_func=lambda i: next(r["candidate_ref"] for r in rows if r["id"] == i))
     detail(aid)
+
+
+def pool_search(jid):
+    with st.expander("Search the resumes", expanded=False):
+        st.caption("Returns lines straight from the resumes. Nothing is summarised, so what you see is what they wrote.")
+        q = st.text_input("A skill or a phrase", placeholder="kafka, led a team, on-call", key=f"q{jid}")
+        if q and len(q.strip()) >= 2:
+            r = run(api().search, jid, q)
+            if r:
+                st.write(f"{len(r['matches'])} of {r['searched']} resumes match.")
+                for m in r["matches"]:
+                    st.markdown(f"**{m['candidate_ref']}**, score {m['score']}")
+                    for ln in m["lines"]:
+                        tag = " (only in a skills list)" if ln["only_in_skills_list"] else ""
+                        st.markdown(f"> {ln['text']}{tag}")
+
+
+def compare_box(jid, rows):
+    with st.expander("Compare two candidates"):
+        ids = [r["id"] for r in rows]
+        if len(ids) < 2:
+            st.write("Needs two applications.")
+            return
+        ref = {r["id"]: r["candidate_ref"] for r in rows}
+        c1, c2 = st.columns(2)
+        x = c1.selectbox("First", ids, format_func=ref.get, key=f"cx{jid}")
+        y = c2.selectbox("Second", ids, index=1, format_func=ref.get, key=f"cy{jid}")
+        if x != y:
+            r = run(api().compare, jid, x, y)
+            if r:
+                df = pd.DataFrame([{"skill": s["skill"], "type": s["kind"], r["a"]: s["a"], r["b"]: s["b"]} for s in r["skills"]])
+                st.dataframe(df, hide_index=True, width="stretch")
+                comp = pd.DataFrame({r["a"]: {k: v["a"] for k, v in r["components"].items()}, r["b"]: {k: v["b"] for k, v in r["components"].items()}})
+                st.bar_chart(comp.fillna(0))
 
 
 def detail(aid):
@@ -164,6 +213,10 @@ def detail(aid):
                 if r.get("evidence"):
                     line += f"\n  > {r['evidence']}"
                 st.markdown(line)
+    if a.get("gaps"):
+        st.markdown("**What is holding the score back** (exact, from the weights above)")
+        for g in a["gaps"][:5]:
+            st.markdown(f"- {g['skill']} ({g['status']}): up to +{g['gain']} points if shown in the work history")
     with st.expander("Exactly what the scorer read (identity removed)"):
         st.text(a["what_the_scorer_saw"])
     st.markdown("**Your decision**")
@@ -265,6 +318,8 @@ if "me" not in st.session_state:
 else:
     me = st.session_state.me
     st.sidebar.write(f"{me['username']} ({me['role']}), {me['org_name']}")
+    if demo_on():
+        st.sidebar.warning("Demo data. No real resumes, please.")
     page = st.sidebar.radio("Go to", ["Overview", "Jobs", "Candidates", "Fairness", "Admin"])
     if st.sidebar.button("Sign out"):
         st.session_state.clear()

@@ -15,6 +15,9 @@ I first built this as an internship project in 2025. That version worked, but wh
 - Drafts candidate emails but never sends one on its own. Someone has to press send.
 - Schedules interviews through a signed link that only works inside the time window you set, and only once. The candidate page records tab switches, paste counts and total time. It does not use the camera and it does not try to guess whether an answer was written by AI.
 - Produces a four-fifths adverse-impact report from voluntary self-reported group labels, for both what people decided and what the score alone would have picked. The labels are never used in scoring.
+- Searches inside the resumes and returns the matching lines word for word. Nothing is summarised or generated, so "who has Kafka in their work history" gives real lines, and a skill that is only in a keyword list is marked as such.
+- Shows what is holding a score back. The score is a weighted average, so "up to +9.4 points if FastAPI were shown in the work history" is exact arithmetic (and tested), not an estimate.
+- Compares two candidates skill by skill.
 - Asks for consent when an application is added, deletes data after a retention period, and can erase a candidate on request.
 
 ## Quick start
@@ -40,6 +43,10 @@ streamlit run recruitiq/ui/app.py
 Sign in at http://localhost:8501 with the bootstrap user. The API docs are at http://localhost:8000/docs. To create an admin without the environment variables, run `python -m recruitiq.cli create-admin`.
 
 With Docker: fill in `.env`, then `docker compose up --build`.
+
+## Live demo
+
+A demo with made-up candidates is hosted on Render's free plan: https://recruitiq.onrender.com (login `demo` / `recruiter-demo-2026`). The free plan sleeps when idle, so the first load can take a minute, and the data resets whenever it restarts. Please do not upload real resumes to it. The `render.yaml` in this repo deploys the same thing. The demo includes a strong resume, a keyword-stuffed one, one with hidden instructions to the scorer, a resume that describes the right work in different words, and an unrelated one, so you can see how each is handled.
 
 ## How a screening goes
 
@@ -108,7 +115,7 @@ recruitiq/ui        Streamlit dashboard
 portal/             the candidate interview page
 data/skills.yaml    skill ontology
 eval/               synthetic benchmark
-tests/              52 tests
+tests/              63 tests
 ```
 
 ## Tests

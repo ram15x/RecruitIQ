@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..config import ROOT, Settings, get_settings
-from ..core import fairness, pii
+from ..core import evidence, fairness, gaps, pii
 from ..core.jobspec import JobSpec
 from ..core.scoring import Scorer
 from ..core.skills import default_ontology
@@ -43,6 +43,9 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         app.state.engine = make_engine(settings.db_url)
         app.state.session_factory = make_session_factory(app.state.engine)
         _bootstrap(app.state.session_factory, settings)
+        if settings.demo:
+            from .. import demo
+            demo.seed(app.state.session_factory, app.state.scorer)
         yield
         app.state.engine.dispose()
 
@@ -56,7 +59,7 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
 
     @app.get("/health")
     def health():
-        return {"status": "ok"}
+        return {"status": "ok", "demo": settings.demo}
 
     # ------------------------------------------------------------------ auth
     @app.post("/auth/login", response_model=schemas.Token)
@@ -222,12 +225,44 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         # names are not in the list on purpose. reviewers read the evidence first and reveal identity when they need it
         return [_summary(a) for a in rows]
 
+    @app.get("/jobs/{job_id}/search")
+    def search_pool(job_id: int, q: str, limit: int = 3, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        """Find resumes in this job's pool that say something. Returns the resume's own lines, nothing generated, no names."""
+        _job(db, user, job_id)
+        q = q.strip()[:200]
+        if len(q) < 2:
+            raise HTTPException(422, "type a skill or a phrase")
+        o = default_ontology()
+        rows = []
+        for a in db.scalars(select(Application).where(Application.job_id == job_id, Application.org_id == user.org_id)):
+            c = a.candidate
+            lines = evidence.search(q, pii.mask(c.resume_text, [c.name]).text, o, limit=min(max(limit, 1), 5))
+            if lines:
+                rows.append({"id": a.id, "candidate_ref": ref(a.candidate_id), "score": a.score, "status": a.status,
+                             "in_work_history": sum(1 for ln in lines if not ln.in_skills_list),
+                             "lines": [{"text": ln.text, "only_in_skills_list": ln.in_skills_list} for ln in lines]})
+        rows.sort(key=lambda r: (-r["in_work_history"], -r["score"]))
+        return {"query": q, "matches": rows, "searched": db.scalar(select(func.count()).select_from(Application).where(
+            Application.job_id == job_id, Application.org_id == user.org_id))}
+
+    @app.get("/jobs/{job_id}/compare")
+    def compare_two(job_id: int, a: int, b: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        _job(db, user, job_id)
+        rows = [db.scalar(select(Application).where(Application.id == i, Application.job_id == job_id, Application.org_id == user.org_id)) for i in (a, b)]
+        if not all(rows):
+            raise HTTPException(404, "application not found")
+        out = gaps.compare(rows[0].result, rows[1].result)
+        out["a"], out["b"] = ref(rows[0].candidate_id), ref(rows[1].candidate_id)
+        out["scores"] = {"a": rows[0].score, "b": rows[1].score}
+        return out
+
     @app.get("/applications/{app_id}")
     def application(app_id: int, reveal: bool = False, user: User = Depends(current_user), db: Session = Depends(get_db)):
         a = _app(db, user, app_id)
         c = a.candidate
         out = _summary(a) | {"job_id": a.job_id, "result": a.result, "decision_reason": a.decision_reason,
                              "decided_at": a.decided_at.isoformat() if a.decided_at else None,
+                             "gaps": gaps.score_gaps(a.result),
                              "what_the_scorer_saw": pii.mask(c.resume_text, [c.name]).text,
                              "interviews": [{"id": i.id, "status": i.status, "scheduled_at": i.scheduled_at.isoformat(),
                                              "questions": i.questions, "answers": i.answers if reveal else None,

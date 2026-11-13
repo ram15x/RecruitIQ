@@ -1,0 +1,34 @@
+# Render blueprint for a free-tier demo. Two services: the API and the dashboard.
+# The database is SQLite on the service's temporary disk, so the demo data is rebuilt whenever the service restarts.
+# For real use, point RECRUITIQ_DB_URL at Postgres and set RECRUITIQ_DEMO to 0.
+services:
+  - type: web
+    name: recruitiq-api
+    runtime: docker
+    plan: free
+    dockerCommand: sh -c "uvicorn recruitiq.api.app:app_factory --factory --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    envVars:
+      - key: RECRUITIQ_JWT_SECRET
+        generateValue: true
+      - key: RECRUITIQ_DEMO
+        value: "1"
+      - key: RECRUITIQ_BOOTSTRAP_USER
+        value: demo
+      - key: RECRUITIQ_BOOTSTRAP_PASSWORD
+        value: recruiter-demo-2026
+      - key: RECRUITIQ_PUBLIC_URL
+        value: https://recruitiq-api.onrender.com
+      - key: RECRUITIQ_RETENTION_DAYS
+        value: "7"
+  - type: web
+    name: recruitiq
+    runtime: docker
+    plan: free
+    dockerCommand: sh -c "streamlit run recruitiq/ui/app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true"
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: RECRUITIQ_API_URL
+        value: https://recruitiq-api.onrender.com
+      - key: RECRUITIQ_DEMO_HINT
+        value: "Demo login: username demo, password recruiter-demo-2026"

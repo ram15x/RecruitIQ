@@ -28,7 +28,7 @@ def make_second_org(client, settings, tmp_path):
 
 
 def test_health_and_auth_required(client):
-    assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/health").json() == {"status": "ok", "demo": False}
     assert client.get("/jobs").status_code == 401
     assert client.get("/jobs", headers={"Authorization": "Bearer nonsense"}).status_code == 401
 
