@@ -58,6 +58,18 @@ With an OpenRouter key set, there are three extras: a second opinion on which sk
 
 A demo with made-up candidates is hosted on Render's free plan: https://recruitiq.onrender.com (login `demo` / `recruiter-demo-2026`). The free plan sleeps when idle, so the first load can take a minute, and the data resets whenever it restarts. Please do not upload real resumes to it. The `render.yaml` in this repo deploys the same thing. The demo includes a strong resume, a keyword-stuffed one, one with hidden instructions to the scorer, a resume that describes the right work in different words, and an unrelated one, so you can see how each is handled.
 
+## Running it mostly on its own
+
+Each job has an autopilot setting, off by default. What it can do without a person:
+
+- email each applicant to say the application arrived
+- invite a strong match to the interview, only if the score is at or above a line you pick and nothing in the file was flagged
+- run the interview (written or voice) and read the answers with a language model, if a key is set
+
+What it never does on its own: reject anyone, accept anyone after an interview, or touch a flagged file.
+
+The Overview page is a list of what needs a person: flagged files, borderline scores, finished interviews, and emails that failed. Suggested shortlists and suggested rejections sit there too, and a batch needs one written reason and the typed number of people before anything happens. Rejection emails go out only from that click.
+
 ## How a screening goes
 
 1. Create a job. Paste the description and the app suggests required and preferred skills from it. You check and edit them before saving. Put the must-haves and the nice-to-haves under separate headings in the description, because that is how they are told apart.
@@ -129,7 +141,7 @@ recruitiq/ui        Streamlit dashboard
 portal/             the candidate interview page
 data/skills.yaml    skill ontology
 eval/               synthetic benchmark
-tests/              76 tests
+tests/              94 tests
 ```
 
 ## Tests
