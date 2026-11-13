@@ -99,3 +99,35 @@ def test_demo_data_behaves_as_described(settings):
         assert rows[0]["score"] >= 70 and rows[0]["status"] == "shortlisted"
         flagged = [r for r in rows if r["needs_review"]]
         assert len(flagged) >= 2 and all(r["score"] < 55 for r in flagged)  # the stuffed and the injected resumes
+
+
+def test_excel_export_is_blind_by_default_and_logs_identity_requests(client, auth, job):
+    import io
+
+    from openpyxl import load_workbook
+    apply(client, auth, job["id"])
+    r = client.get(f"/jobs/{job['id']}/export.xlsx", headers=auth)
+    assert r.status_code == 200
+    ws = load_workbook(io.BytesIO(r.content))["Ranked"]
+    head = [c.value for c in ws[1]]
+    assert "Name" not in head and "Email" not in head and ws.max_row == 2 and ws["B2"].value.startswith("C-")
+    r2 = client.get(f"/jobs/{job['id']}/export.xlsx", params={"reveal": True}, headers=auth)
+    assert "Name" in [c.value for c in load_workbook(io.BytesIO(r2.content))["Ranked"][1]]
+    assert any(e["action"] == "export_downloaded" and e["detail"] for e in client.get("/audit", headers=auth).json())
+
+
+def test_webhook_accepts_a_file_the_way_a_google_form_sends_it(client, job):
+    import base64
+    import hashlib
+    import hmac
+    import json
+
+    from tests.test_inbox import docx_of
+    body = json.dumps({"job_id": job["id"], "name": "Form Person", "email": "form@example.com", "consent": True, "source": "google_form",
+                       "resume_base64": base64.b64encode(docx_of(STRONG)).decode(), "resume_filename": "cv.docx"}).encode()
+    sig = "sha256=" + hmac.new(b"hook-secret", body, hashlib.sha256).hexdigest()
+    r = client.post("/webhooks/intake", content=body, headers={"x-signature": sig})
+    assert r.status_code == 201
+    bad = json.dumps({"job_id": job["id"], "name": "X", "email": "x@example.com", "consent": True, "resume_base64": base64.b64encode(b"MZ\x90\xff\xfe junk" * 20).decode()}).encode()
+    sig2 = "sha256=" + hmac.new(b"hook-secret", bad, hashlib.sha256).hexdigest()
+    assert client.post("/webhooks/intake", content=bad, headers={"x-signature": sig2}).status_code == 422

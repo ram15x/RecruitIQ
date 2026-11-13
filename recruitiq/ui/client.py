@@ -50,12 +50,17 @@ class Api:
     def health(self): return self.http.get("/health").json()
     def search(self, jid, q): return self._req("GET", f"/jobs/{jid}/search", params={"q": q}).json()
     def compare(self, jid, a, b): return self._req("GET", f"/jobs/{jid}/compare", params={"a": a, "b": b}).json()
+    def export(self, jid, reveal=False): return self._req("GET", f"/jobs/{jid}/export.xlsx", params={"reveal": reveal}).content
+    def research(self, title, location=""): return self._req("POST", "/jobs/research", json={"title": title, "location": location}).json()
     def caps(self): return self._req("GET", "/capabilities").json()
     def brief(self, aid): return self._req("POST", f"/applications/{aid}/brief").json()
     def ask(self, jid, q): return self._req("POST", f"/jobs/{jid}/ask", json={"question": q}).json()
     def poll_inbox(self): return self._req("POST", "/admin/inbox/poll").json()
     def application(self, aid, reveal=False): return self._req("GET", f"/applications/{aid}", params={"reveal": reveal}).json()
-    def decide(self, aid, decision, reason): return self._req("POST", f"/applications/{aid}/decision", json={"decision": decision, "reason": reason}).json()
+    def decide(self, aid, decision, reason, send=False, subject=None, message=None):
+        return self._req("POST", f"/applications/{aid}/decision", json={"decision": decision, "reason": reason, "send": send, "subject": subject, "message": message}).json()
+
+    def preview(self, aid, decision): return self._req("GET", f"/applications/{aid}/message-preview", params={"decision": decision}).json()
     def report(self, aid, reveal=False): return self._req("GET", f"/applications/{aid}/report.pdf", params={"reveal": reveal}).content
     def draft_mail(self, aid): return self._req("POST", f"/applications/{aid}/notifications", json={"kind": "decision"}).json()
     def send_mail(self, nid): return self._req("POST", f"/notifications/{nid}/send").json()

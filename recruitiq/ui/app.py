@@ -87,9 +87,26 @@ def page_overview():
 
 def page_jobs():
     st.subheader("New job")
+    if caps().get("llm"):
+        with st.expander("Research a current market job description (web search)"):
+            rt = st.text_input("Role", placeholder="Backend Engineer", key="rtitle")
+            rl = st.text_input("Location (optional)", key="rloc")
+            if st.button("Research it") and rt:
+                with st.spinner("Searching current postings..."):
+                    r = run(api().research, rt, rl)
+                if r:
+                    st.session_state.researched = r
+                    st.session_state["jtitle"] = rt
+                    st.session_state["jdesc"] = r["description"]
+                    st.rerun()
+        if st.session_state.get("researched"):
+            rr = st.session_state["researched"]
+            st.info(rr["note"])
+            for src in rr["sources"]:
+                st.markdown(f"- [{src['title']}]({src['url']})")
     with st.form("job"):
-        title = st.text_input("Title")
-        desc = st.text_area("Description", height=200, help="Put must-haves and nice-to-haves under separate headings so they can be told apart.")
+        title = st.text_input("Title", key="jtitle")
+        desc = st.text_area("Description", height=200, key="jdesc", help="Put must-haves and nice-to-haves under separate headings so they can be told apart.")
         years = st.number_input("Minimum years (0 = take it from the text)", 0.0, 40.0, 0.0, 0.5)
         preview = st.form_submit_button("Preview extracted skills")
     if preview and title and desc:
@@ -155,6 +172,10 @@ def page_candidates():
     df = pd.DataFrame([{"id": r["id"], "ref": r["candidate_ref"], "score": r["score"], "band": r["band"], "status": r["status"],
                         "closer look": "yes" if r["needs_review"] else "", "flags": r["flags"]} for r in rows])
     st.dataframe(df, hide_index=True, width="stretch")
+    xl = run(api().export, job["id"], False)
+    if xl:
+        st.download_button("Download this list as Excel", xl, file_name=f"recruitiq_job_{job['id']}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     pool_search(job["id"])
     pool_ask(job["id"])
     compare_box(job["id"], rows)
@@ -263,12 +284,27 @@ def detail(aid):
     st.markdown("**Your decision**")
     if a["decision_reason"]:
         st.write(f"Current: {a['status']}. Reason: {a['decision_reason']}")
-    with st.form(f"dec{aid}"):
-        d = st.radio("Decision", ["shortlist", "hold", "reject"], horizontal=True)
-        reason = st.text_area("Reason (required, at least 10 characters). Say what you saw in the resume.")
-        if st.form_submit_button("Record decision"):
-            if run(api().decide, aid, d, reason):
-                st.rerun()
+    reason = st.text_area("Your reason (required, at least 10 characters). Say what you saw in the resume.", key=f"reason{aid}")
+    tabs = st.tabs(["Accept", "Reject", "Hold"])
+    for tab, dec, label in ((tabs[0], "shortlist", "Accept"), (tabs[1], "reject", "Reject")):
+        with tab:
+            pv = run(api().preview, aid, dec)
+            if not pv:
+                continue
+            st.caption(f"This email goes to the candidate when you press the button. Edit it first if you want. To: {pv['to'] if reveal else 'the candidate'}")
+            subj = st.text_input("Subject", pv["subject"], key=f"sub{dec}{aid}")
+            msg = st.text_area("Message", pv["body"], height=220, key=f"msg{dec}{aid}")
+            if st.button(f"{label} and send the email", key=f"go{dec}{aid}", type="primary" if dec == "shortlist" else "secondary"):
+                r = run(api().decide, aid, dec, reason, True, subj, msg)
+                if r:
+                    m = r.get("mail", {})
+                    if m.get("status") == "sent":
+                        st.success("Recorded, and the email was sent.")
+                    else:
+                        st.warning("Recorded. The email was NOT sent: " + (m.get("error") or "unknown") + ". It is saved as a draft.")
+    with tabs[2]:
+        if st.button("Put on hold (no email)", key=f"hold{aid}") and run(api().decide, aid, "hold", reason):
+            st.rerun()
     c = st.columns(3)
     pdf = run(api().report, aid, reveal)
     if pdf:

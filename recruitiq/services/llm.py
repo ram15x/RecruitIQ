@@ -163,3 +163,69 @@ def answer_from_lines(api_key, question: str, lines: list[dict], transport=None,
     if not cites and "nothing" not in a.answer.lower() and "not" not in a.answer.lower():
         return {"answer": "The model gave an answer without citing any resume line, so it was not shown.", "cites": []}
     return {"answer": a.answer, "cites": cites}
+
+
+# ------------------------------------------------------------------ market job description research
+class Researched(BaseModel):
+    summary: str = Field(default="", max_length=600)
+    responsibilities: list[str] = Field(default_factory=list, max_length=10)
+    requirements: list[str] = Field(default_factory=list, max_length=14)
+    nice_to_have: list[str] = Field(default_factory=list, max_length=10)
+    min_years: float | None = Field(default=None, ge=0, le=40)
+
+
+WEB_MODELS = ["openai/gpt-4o-mini:online", "google/gemini-2.5-flash:online"]
+
+
+def research_job(api_key, title: str, location: str = "", transport=None, models=None, base_url="https://openrouter.ai/api/v1") -> dict | None:
+    """Draft a job description from what current postings for the role ask for, using OpenRouter's web search.
+
+    The sources returned are the pages the search tool actually found (they come from the response's citation data, not from
+    the model's text). The draft is for the recruiter to edit. It describes the market, it does not claim to be any one employer's posting.
+    """
+    if not api_key or not title.strip():
+        return None
+    msg = None
+    for model in models or WEB_MODELS:
+        try:
+            with httpx.Client(timeout=90, transport=transport) as c:
+                r = c.post(f"{base_url}/chat/completions", headers={"Authorization": f"Bearer {api_key}"},
+                           json={"model": model, "temperature": 0.2, "max_tokens": 900, "messages": [
+                               {"role": "system", "content": "Answer only with a JSON object and nothing else."},
+                               {"role": "user", "content": f"Search the web for current job postings for the role '{title[:80]}'{' in ' + location[:60] if location else ''}. "
+                                "Summarise what they commonly ask for. Keep to what the postings say, do not invent requirements, and leave a list empty if unsure. "
+                                'JSON: {"summary": "", "responsibilities": [], "requirements": [], "nice_to_have": [], "min_years": null}'}]})
+                r.raise_for_status()
+                msg = r.json()["choices"][0]["message"]
+            break
+        except (httpx.HTTPError, KeyError, ValueError, IndexError) as e:
+            log.warning("research model %s failed: %s", model, type(e).__name__)
+    if not msg:
+        return None
+    text = msg.get("content") or ""
+    start, end = text.find("{"), text.rfind("}")
+    try:
+        d = Researched.model_validate(json.loads(text[start:end + 1]))
+    except (ValueError, ValidationError):
+        return None
+    sources, seen = [], set()
+    for ann in msg.get("annotations") or []:
+        u = (ann.get("url_citation") or {}) if isinstance(ann, dict) else {}
+        url = u.get("url", "")
+        if url.startswith("https://") and url not in seen:
+            seen.add(url)
+            sources.append({"title": (u.get("title") or url)[:120], "url": url})
+    lines = [title.strip(), ""]
+    if d.summary:
+        lines += ["About the role", d.summary, ""]
+    if d.responsibilities:
+        lines += ["Responsibilities"] + [f"- {x}" for x in d.responsibilities] + [""]
+    req = list(d.requirements)
+    if d.min_years and not any("year" in x.lower() for x in req):
+        req.insert(0, f"{d.min_years:g}+ years of relevant experience")
+    lines += ["Requirements"] + [f"- {x}" for x in req] + [""]
+    if d.nice_to_have:
+        lines += ["Nice to have"] + [f"- {x}" for x in d.nice_to_have]
+    return {"description": "\n".join(lines).strip(), "sources": sources,
+            "note": "A draft built from current postings found on the web. Check it, edit it, and remove anything that is not true of your role."
+                    + ("" if sources else " The search returned no citable pages, so treat every line with extra care.")}

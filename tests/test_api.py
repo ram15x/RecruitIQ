@@ -227,3 +227,30 @@ def test_dashboard(client, auth, job):
     apply(client, auth, job["id"])
     d = client.get("/dashboard", headers=auth).json()
     assert d["open_jobs"] == 1
+
+
+def test_accept_and_reject_buttons_email_the_candidate_only_when_pressed(client, auth, job, monkeypatch):
+    import recruitiq.api.app as appmod
+    sent = []
+    monkeypatch.setattr(appmod, "_mailer", lambda settings, n: (sent.append((n.to_email, n.subject, n.body)) or True, ""))
+    a = apply(client, auth, job["id"]).json()
+    b = apply(client, auth, job["id"], name="Vikram Nair", email="v@example.com", text=WEAK).json()
+    pv = client.get(f"/applications/{a['id']}/message-preview", params={"decision": "shortlist"}, headers=auth).json()
+    assert "next step" in pv["body"] and sent == []  # looking at the preview sends nothing
+    # a decision without send=true sends nothing
+    client.post(f"/applications/{b['id']}/decision", json={"decision": "hold", "reason": "Want to see the other candidates first."}, headers=auth)
+    assert sent == []
+    r = client.post(f"/applications/{a['id']}/decision", headers=auth, json={
+        "decision": "shortlist", "reason": "Strong evidenced backend work.", "send": True, "message": "Hi Asha, we loved your API work. Details soon."}).json()
+    assert r["mail"]["status"] == "sent" and sent[-1][0] == "asha@example.com" and sent[-1][2].startswith("Hi Asha")
+    r = client.post(f"/applications/{b['id']}/decision", headers=auth, json={"decision": "reject", "reason": "No backend work in the history.", "send": True}).json()
+    assert r["mail"]["status"] == "sent" and "not be taking your application further" in sent[-1][2]
+    # hold never emails even when asked to
+    client.post(f"/applications/{b['id']}/decision", headers=auth, json={"decision": "hold", "reason": "Second thoughts, holding.", "send": True})
+    assert len(sent) == 2
+
+
+def test_failed_send_is_reported_and_decision_still_recorded(client, auth, job):
+    a = apply(client, auth, job["id"]).json()
+    r = client.post(f"/applications/{a['id']}/decision", headers=auth, json={"decision": "shortlist", "reason": "Strong evidenced backend work.", "send": True}).json()
+    assert r["status"] == "shortlisted" and r["mail"]["status"] == "failed" and r["mail"]["error"]

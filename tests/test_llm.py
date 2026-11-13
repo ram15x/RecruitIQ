@@ -103,3 +103,19 @@ def test_endpoints_send_only_anonymised_text_and_skip_flagged_resumes(settings):
         a2 = apply(c2, h2, job2["id"]).json()
         assert c2.post(f"/applications/{a2['id']}/brief", headers=h2).status_code == 400
         assert c2.get("/capabilities", headers=h2).json()["llm"] is False
+
+
+def test_market_research_builds_a_description_the_parser_understands_and_keeps_only_real_sources():
+    msg = {"content": json.dumps({"summary": "Builds APIs.", "responsibilities": ["Design services"], "requirements": ["Python", "FastAPI", "PostgreSQL"],
+                                  "nice_to_have": ["Kafka"], "min_years": 3}),
+           "annotations": [{"type": "url_citation", "url_citation": {"url": "https://example.com/jobs/1", "title": "Backend Engineer at X"}},
+                           {"type": "url_citation", "url_citation": {"url": "http://insecure.example/2", "title": "plain http is dropped"}},
+                           {"type": "url_citation", "url_citation": {"url": "https://example.com/jobs/1", "title": "duplicate"}}]}
+    t = httpx.MockTransport(lambda req: httpx.Response(200, json={"choices": [{"message": msg}]}))
+    out = llm.research_job("k", "Backend Engineer", transport=t)
+    assert [s["url"] for s in out["sources"]] == ["https://example.com/jobs/1"]
+    from recruitiq.core.jobspec import JobSpec
+    spec = JobSpec.from_text("Backend Engineer", out["description"])
+    assert set(spec.required) == {"python", "fastapi", "postgresql"} and spec.preferred == ["kafka"] and spec.min_years == 3
+    assert llm.research_job("", "Backend Engineer") is None
+    assert llm.research_job("k", "x", transport=httpx.MockTransport(lambda r: httpx.Response(500))) is None

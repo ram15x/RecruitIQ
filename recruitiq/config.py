@@ -38,6 +38,7 @@ class Settings:
     inbox_poll_seconds: int = field(default_factory=lambda: int(os.environ.get("RECRUITIQ_INBOX_POLL_SECONDS", "0")))
     # optional LLM helper. nothing in scoring uses it
     llm_models: list = field(default_factory=lambda: [m for m in os.environ.get("RECRUITIQ_LLM_MODELS", "").split(",") if m] or None)
+    llm_web_models: list = field(default_factory=lambda: [m for m in os.environ.get("RECRUITIQ_LLM_WEB_MODELS", "").split(",") if m] or None)
     llm_api_key: str = field(default_factory=lambda: os.environ.get("OPENROUTER_API_KEY", ""))
 
 

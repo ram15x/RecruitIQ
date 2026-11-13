@@ -61,6 +61,11 @@ class ApplicantIn(BaseModel):
 class DecisionIn(BaseModel):
     decision: str
     reason: str = Field(min_length=10, max_length=2000)
+    # when true, a shortlist or reject also emails the candidate. the person pressing the button is the one sending it.
+    # leave subject and message out to use the standard wording
+    send: bool = False
+    subject: str | None = Field(default=None, max_length=200)
+    message: str | None = Field(default=None, max_length=4000)
 
     @field_validator("decision")
     @classmethod
@@ -114,10 +119,18 @@ class WebhookIn(BaseModel):
     job_id: int
     name: str
     email: EmailStr
-    resume_text: str = Field(min_length=1, max_length=60000)
+    # send either the text, or the file itself (base64) as a Google Form upload would arrive
+    resume_text: str = Field(default="", max_length=60000)
+    resume_base64: str | None = Field(default=None, max_length=8_000_000)
+    resume_filename: str = "resume.pdf"
     consent: bool
     source: str = "webhook"
 
 
 class AskIn(BaseModel):
     question: str = Field(min_length=4, max_length=300)
+
+
+class ResearchIn(BaseModel):
+    title: str = Field(min_length=2, max_length=80)
+    location: str = Field(default="", max_length=60)

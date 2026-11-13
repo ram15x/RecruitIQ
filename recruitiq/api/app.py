@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import datetime as dt
 import json
 import logging
@@ -120,6 +121,19 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
             out["llm_suggestion"] = llm.suggest_job_skills(settings.llm_api_key, body.description, models=settings.llm_models)
         return out
 
+    @app.post("/jobs/research")
+    def research(body: schemas.ResearchIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        """Draft a job description from current postings on the web. The recruiter edits it before saving."""
+        if not settings.llm_api_key:
+            raise HTTPException(400, "no language model key is set")
+        out = llm.research_job(settings.llm_api_key, body.title, body.location, models=settings.llm_web_models)
+        if out is None:
+            raise HTTPException(502, "the web research did not give a usable answer, try again later")
+        out["suggested_skills"] = {k: v for k, v in zip(("required", "preferred", "min_years"), (lambda sp: (sp.required, sp.preferred, sp.min_years))(
+            JobSpec.from_text(body.title, out["description"])))}
+        audit(db, user, "job_researched", "job", "", body.title[:60])
+        return out
+
     @app.post("/jobs", response_model=schemas.JobOut, status_code=201)
     def create_job(body: schemas.JobIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
         spec = JobSpec.from_text(body.title, body.description, required=body.required, preferred=body.preferred, min_years=body.min_years)
@@ -220,7 +234,13 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         job = db.get(Job, body.job_id)
         if not job:
             raise HTTPException(404, "job not found")
-        a = _ingest(db, job.org_id, job, body.name, body.email, body.resume_text, body.source, body.consent, None)
+        text, fl = body.resume_text, []
+        if body.resume_base64:
+            try:
+                text, fl = resume_text.extract_ex(base64.b64decode(body.resume_base64, validate=False), body.resume_filename, settings.max_upload_mb * 1_000_000)
+            except (resume_text.UploadError, ValueError) as e:
+                raise HTTPException(422, f"could not read the attached resume: {e}")
+        a = _ingest(db, job.org_id, job, body.name, body.email, text, body.source, body.consent, None, fl)
         return {"id": a.id, "candidate_ref": ref(a.candidate_id)}
 
     @app.get("/jobs/{job_id}/applications")
@@ -235,6 +255,41 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         rows = db.scalars(stmt.order_by(Application.score.desc(), Application.id))
         # names are not in the list on purpose. reviewers read the evidence first and reveal identity when they need it
         return [_summary(a) for a in rows]
+
+    @app.get("/jobs/{job_id}/export.xlsx")
+    def export_xlsx(job_id: int, reveal: bool = False, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        """The ranked list as a spreadsheet. Names and emails are only included when asked for, and that is logged."""
+        import io
+
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+        job = _job(db, user, job_id)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Ranked"
+        head = ["Rank", "Reference"] + (["Name", "Email"] if reveal else []) + ["Score", "Band", "Status", "Needs a closer look", "Flags", "Required skills shown in work", "Required skills missing", "Years in dated roles", "Decision reason"]
+        ws.append(head)
+        for c in ws[1]:
+            c.font = Font(bold=True)
+        rows = list(db.scalars(select(Application).where(Application.job_id == job_id, Application.org_id == user.org_id).order_by(Application.score.desc(), Application.id)))
+        for i, a in enumerate(rows, 1):
+            res = a.result
+            req = res.get("required", [])
+            ws.append([i, ref(a.candidate_id)] + ([a.candidate.name, a.candidate.email] if reveal else []) + [
+                a.score, a.band, a.status, "yes" if a.needs_review else "", ", ".join(f["kind"] for f in res.get("flags", [])),
+                ", ".join(r["skill"] for r in req if r["status"] == "evidenced"), ", ".join(r["skill"] for r in req if r["status"] == "missing"),
+                res.get("years", {}).get("years"), a.decision_reason])
+        ws.freeze_panes = "A2"
+        info = wb.create_sheet("About")
+        info.append(["Job", job.title])
+        info.append(["Required", ", ".join(job.required)])
+        info.append(["Preferred", ", ".join(job.preferred)])
+        info.append(["Note", "Scores order a review queue. A person makes every decision."])
+        buf = io.BytesIO()
+        wb.save(buf)
+        audit(db, user, "export_downloaded", "job", job_id, "with identities" if reveal else "")
+        return Response(buf.getvalue(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": f'attachment; filename="recruitiq_job_{job_id}.xlsx"'})
 
     @app.get("/jobs/{job_id}/search")
     def search_pool(job_id: int, q: str, limit: int = 3, user: User = Depends(current_user), db: Session = Depends(get_db)):
@@ -284,6 +339,15 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
             audit(db, user, "identity_revealed", "application", a.id)
         return out
 
+    @app.get("/applications/{app_id}/message-preview")
+    def message_preview(app_id: int, decision: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+        """The standard follow-up for an accept or a reject, so the person can read and edit it before pressing the button."""
+        if decision not in ("shortlist", "reject"):
+            raise HTTPException(422, "decision must be shortlist or reject")
+        a = _app(db, user, app_id)
+        subject, text = notify.decision(a.candidate.name, db.get(Job, a.job_id).title, "shortlisted" if decision == "shortlist" else "rejected")
+        return {"to": a.candidate.email, "subject": subject, "body": text}
+
     @app.post("/applications/{app_id}/decision")
     def decide(app_id: int, body: schemas.DecisionIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
         a = _app(db, user, app_id)
@@ -291,7 +355,20 @@ def create_app(settings: Settings | None = None, scorer: Scorer | None = None) -
         a.decided_by, a.decided_at, a.decision_reason = user.id, now(), body.reason.strip()
         db.commit()
         audit(db, user, "decision", "application", a.id, body.decision)
-        return _summary(a) | {"decision_reason": a.decision_reason}
+        out = _summary(a) | {"decision_reason": a.decision_reason}
+        if body.send and body.decision in ("shortlist", "reject"):
+            subject, text = notify.decision(a.candidate.name, db.get(Job, a.job_id).title, a.status)
+            n = Notification(org_id=user.org_id, application_id=a.id, to_email=a.candidate.email, subject=(body.subject or subject).strip(),
+                             body=(body.message or text).strip(), created_by=user.id)
+            db.add(n)
+            db.commit()
+            ok, err = _mailer(settings, n)
+            n.status, n.error = ("sent", "") if ok else ("failed", err)
+            n.sent_at = now() if ok else None
+            db.commit()
+            audit(db, user, "notification_sent" if ok else "notification_failed", "notification", n.id, err)
+            out["mail"] = {"id": n.id, "status": n.status, "error": n.error}
+        return out
 
     @app.get("/applications/{app_id}/report.pdf")
     def pdf(app_id: int, reveal: bool = False, user: User = Depends(current_user), db: Session = Depends(get_db)):
