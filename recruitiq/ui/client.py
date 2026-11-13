@@ -55,6 +55,9 @@ class Api:
     def media_list(self, aid, iid): return self._req("GET", f"/applications/{aid}/interviews/{iid}/media").json()
     def media(self, aid, iid, qid): return self._req("GET", f"/applications/{aid}/interviews/{iid}/media/{qid}").content
     def review(self, aid, iid): return self._req("POST", f"/applications/{aid}/interviews/{iid}/review").json()
+    def todo(self, job_id=None): return self._req("GET", "/todo", params={"job_id": job_id} if job_id else None).json()
+    def bulk_decision(self, body): return self._req("POST", "/bulk-decision", json=body).json()
+    def set_autopilot(self, jid, body): return self._req("PUT", f"/jobs/{jid}/autopilot", json=body).json()
     def caps(self): return self._req("GET", "/capabilities").json()
     def brief(self, aid): return self._req("POST", f"/applications/{aid}/brief").json()
     def ask(self, jid, q): return self._req("POST", f"/jobs/{jid}/ask", json={"question": q}).json()

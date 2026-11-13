@@ -72,17 +72,63 @@ def login_screen():
                 st.error("Could not reach the API. Is the server running?")
 
 
-def page_overview():
-    d = run(api().dashboard)
-    if not d:
+def _queue_section(title, key, items, hint):
+    if not items:
         return
-    c = st.columns(4)
-    c[0].metric("Open jobs", d["open_jobs"])
-    c[1].metric("Waiting for a decision", d["awaiting_a_decision"])
-    c[2].metric("Flagged for a closer look", d["flagged_for_review"])
-    c[3].metric("Applications", sum(d["by_status"].values()))
-    if d["by_status"]:
-        st.bar_chart(pd.Series(d["by_status"], name="applications"))
+    with st.expander(f"{title} ({len(items)})", expanded=key in ("flagged", "final_decision")):
+        st.caption(hint)
+        st.dataframe(pd.DataFrame([{"ref": i["candidate_ref"], "job": i["job_title"], "score": i.get("score")} for i in items]), hide_index=True, width="stretch")
+
+
+def _bulk_panel(items, decision, label):
+    """One reason, one count, one click. Rejection emails go out only here, never on their own."""
+    if not items:
+        return
+    ids = [i["id"] for i in items]
+    st.markdown(f"**{label}** for the {len(ids)} listed above")
+    reason = st.text_input("One reason for all of them (required, at least 10 characters)", key=f"br_{decision}")
+    count = st.number_input("Type the number of people this will affect", 0, 10000, 0, key=f"bc_{decision}")
+    send = st.checkbox("Also send each person the standard email", key=f"bs_{decision}")
+    invite = decision == "shortlist" and st.checkbox("Also invite them to the interview", key=f"bi_{decision}")
+    if st.button(label, key=f"bb_{decision}", disabled=len(reason.strip()) < 10 or count != len(ids)):
+        r = run(api().bulk_decision, {"application_ids": ids, "decision": decision, "reason": reason, "confirm_count": int(count), "send": send, "invite": invite})
+        if r:
+            st.success(f"Done for {r['decided']}. Skipped {r['skipped_not_pending']} that were not waiting any more. Mail: {r['mail']}")
+            st.rerun()
+
+
+def page_overview():
+    t = run(api().todo)
+    if not t:
+        return
+    n = t["counts"]
+    waiting = sum(n.values())
+    if waiting == 0:
+        st.success("Nothing needs you right now. Applications are being handled by the rules you set for each job.")
+    else:
+        st.subheader(f"{waiting} things need a person")
+    if not t["mail_ready"]:
+        st.warning("Email is not set up, so nothing is being sent automatically. Messages wait as drafts.")
+    it = t["items"]
+    _queue_section("Flagged for a closer look", "flagged", it["flagged"], "Something odd in the file (hidden text, text aimed at an AI, copied job description). Open each one and read it yourself.")
+    _queue_section("Interviews finished, waiting for your decision", "final_decision", it["final_decision"], "The answers and the review are ready. Accept or reject from the Candidates page.")
+    _queue_section("Borderline", "borderline", it["borderline"], "Scores between the two lines you set. Read these.")
+    _queue_section("Suggested: shortlist", "suggested_acceptances", it["suggested_acceptances"], "Strong matches with no flags. Nothing has been sent to them.")
+    _bulk_panel(it["suggested_acceptances"], "shortlist", "Shortlist all")
+    _queue_section("Suggested: reject", "suggested_rejections", it["suggested_rejections"], "Low scores. Nothing has been sent. Look at a few before you confirm.")
+    _bulk_panel(it["suggested_rejections"], "reject", "Reject all")
+    if it["mail_waiting"]:
+        with st.expander(f"Emails waiting or failed ({len(it['mail_waiting'])})"):
+            st.dataframe(pd.DataFrame(it["mail_waiting"]), hide_index=True, width="stretch")
+    d = run(api().dashboard)
+    if d:
+        st.divider()
+        c = st.columns(3)
+        c[0].metric("Open jobs", d["open_jobs"])
+        c[1].metric("Applications", sum(d["by_status"].values()))
+        c[2].metric("Flagged", d["flagged_for_review"])
+        if d["by_status"]:
+            st.bar_chart(pd.Series(d["by_status"], name="applications"))
 
 
 def page_jobs():
@@ -134,6 +180,21 @@ def page_jobs():
             st.write("Required: " + (", ".join(j["required"]) or "none"))
             st.write("Preferred: " + (", ".join(j["preferred"]) or "none"))
             st.write(f"Minimum years: {j['min_years'] if j['min_years'] is not None else 'not set'}")
+            ap = j.get("autopilot") or {}
+            if j["status"] == "open":
+                st.markdown("**Autopilot for this job**")
+                a1 = st.checkbox("Email each applicant to say it was received", bool(ap.get("acknowledge")), key=f"ak{j['id']}")
+                on = st.checkbox("Invite strong, unflagged matches automatically", ap.get("auto_invite_min") is not None, key=f"ai{j['id']}")
+                inv = st.slider("Invite at or above", 50, 100, int(ap.get("auto_invite_min") or 80), key=f"am{j['id']}", disabled=not on)
+                mode = st.selectbox("Interview format", ["written", "voice"], ["written", "voice"].index(ap.get("interview_mode", "written")), key=f"im{j['id']}")
+                lo = st.slider("Suggest rejecting below", 0, 70, int(ap.get("suggest_reject_below", 40)), key=f"lo{j['id']}")
+                hi = st.slider("Suggest shortlisting from", 50, 100, int(ap.get("suggest_accept_from", 70)), key=f"hi{j['id']}")
+                st.caption("Rejections are never sent automatically. They wait for you on the Overview page.")
+                if st.button("Save autopilot", key=f"sv{j['id']}"):
+                    r = run(api().set_autopilot, j["id"], {"acknowledge": a1, "auto_invite_min": float(inv) if on else None, "interview_mode": mode,
+                                                           "suggest_reject_below": float(lo), "suggest_accept_from": float(hi)})
+                    if r:
+                        st.success("Saved")
             if j["status"] == "open" and st.button("Close this job", key=f"close{j['id']}"):
                 run(api().close_job, j["id"])
                 st.rerun()
