@@ -1,0 +1,272 @@
+import datetime as dt
+import sys
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+# streamlit puts this file's folder on the path, not the project root, so add it before importing the package
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from recruitiq.config import get_settings  # noqa: E402
+from recruitiq.ui.client import Api, ApiError  # noqa: E402
+
+st.set_page_config(page_title="RecruitIQ", layout="wide")
+STATUS_ICON = {"evidenced": "shown in work history", "listed": "listed only", "related": "related skill", "missing": "not found"}
+
+
+def api() -> Api:
+    if "api" not in st.session_state:
+        st.session_state.api = Api(get_settings().api_url)
+    return st.session_state.api
+
+
+def run(fn, *a, **kw):
+    # every call goes through here so an API error shows as a message instead of a stack trace
+    try:
+        return fn(*a, **kw)
+    except ApiError as e:
+        if e.status == 401 and "me" in st.session_state:
+            st.session_state.pop("me")
+            st.session_state.pop("api", None)
+            st.rerun()
+        st.error(e.message())
+    except Exception:
+        st.error("Could not reach the API. Is the server running?")
+    return None
+
+
+def login_screen():
+    st.title("RecruitIQ")
+    st.caption("Resume screening where a person makes every decision")
+    with st.form("login"):
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
+        if st.form_submit_button("Sign in"):
+            try:
+                api().login(u, p)
+                st.session_state.me = api().me()
+                st.rerun()
+            except ApiError as e:
+                st.error("Could not sign in: " + e.message())
+            except Exception:
+                st.error("Could not reach the API. Is the server running?")
+
+
+def page_overview():
+    d = run(api().dashboard)
+    if not d:
+        return
+    c = st.columns(4)
+    c[0].metric("Open jobs", d["open_jobs"])
+    c[1].metric("Waiting for a decision", d["awaiting_a_decision"])
+    c[2].metric("Flagged for a closer look", d["flagged_for_review"])
+    c[3].metric("Applications", sum(d["by_status"].values()))
+    if d["by_status"]:
+        st.bar_chart(pd.Series(d["by_status"], name="applications"))
+
+
+def page_jobs():
+    st.subheader("New job")
+    with st.form("job"):
+        title = st.text_input("Title")
+        desc = st.text_area("Description", height=200, help="Put must-haves and nice-to-haves under separate headings so they can be told apart.")
+        years = st.number_input("Minimum years (0 = take it from the text)", 0.0, 40.0, 0.0, 0.5)
+        preview = st.form_submit_button("Preview extracted skills")
+    if preview and title and desc:
+        r = run(api().parse_job, {"title": title, "description": desc, "min_years": years or None})
+        if r:
+            st.session_state.parsed = r
+    if "parsed" in st.session_state:
+        p = st.session_state.parsed
+        st.write("Check these before saving. Edit them if the text missed something.")
+        req = st.text_input("Required skills (comma separated)", ", ".join(p["required"]))
+        pref = st.text_input("Preferred skills (comma separated)", ", ".join(p["preferred"]))
+        if st.button("Save job"):
+            body = {"title": title, "description": desc, "required": [s.strip() for s in req.split(",") if s.strip()],
+                    "preferred": [s.strip() for s in pref.split(",") if s.strip()], "min_years": years or p["min_years"]}
+            if run(api().add_job, body):
+                st.session_state.pop("parsed")
+                st.success("Job saved.")
+                st.rerun()
+    st.subheader("Jobs")
+    for j in run(api().jobs) or []:
+        with st.expander(f"{j['title']}  ({j['status']})"):
+            st.write("Required: " + (", ".join(j["required"]) or "none"))
+            st.write("Preferred: " + (", ".join(j["preferred"]) or "none"))
+            st.write(f"Minimum years: {j['min_years'] if j['min_years'] is not None else 'not set'}")
+            if j["status"] == "open" and st.button("Close this job", key=f"close{j['id']}"):
+                run(api().close_job, j["id"])
+                st.rerun()
+
+
+def pick_job(key="job"):
+    jobs = run(api().jobs) or []
+    if not jobs:
+        st.info("Create a job first.")
+        return None
+    return st.selectbox("Job", jobs, format_func=lambda j: f"{j['title']} ({j['status']})", key=key)
+
+
+def page_candidates():
+    job = pick_job()
+    if not job:
+        return
+    with st.expander("Add an application"):
+        with st.form("apply"):
+            name = st.text_input("Candidate name")
+            email = st.text_input("Candidate email")
+            f = st.file_uploader("Resume (PDF, DOCX or TXT)", type=["pdf", "docx", "txt"])
+            consent = st.checkbox("The candidate has agreed to us processing this application")
+            if st.form_submit_button("Score it"):
+                if not (name and email and f):
+                    st.error("Name, email and a file are all needed.")
+                else:
+                    r = run(api().apply_file, job["id"], name, email, consent, f.name, f.getvalue())
+                    if r:
+                        st.success(f"Scored {r['score']} ({r['band']}).")
+    rows = run(api().ranked, job["id"]) or []
+    if not rows:
+        st.write("No applications yet.")
+        return
+    st.caption("Names are hidden on purpose. Open an application to read the evidence first.")
+    df = pd.DataFrame([{"id": r["id"], "ref": r["candidate_ref"], "score": r["score"], "band": r["band"], "status": r["status"],
+                        "closer look": "yes" if r["needs_review"] else "", "flags": r["flags"]} for r in rows])
+    st.dataframe(df, hide_index=True, width="stretch")
+    aid = st.selectbox("Open application", [r["id"] for r in rows], format_func=lambda i: next(r["candidate_ref"] for r in rows if r["id"] == i))
+    detail(aid)
+
+
+def detail(aid):
+    reveal = st.toggle("Show name and email (this is logged)", key=f"rev{aid}")
+    a = run(api().application, aid, reveal)
+    if not a:
+        return
+    res = a["result"]
+    st.markdown(f"### {a['candidate_ref']}: {a['score']} ({a['band']})")
+    if reveal:
+        st.write(f"**{a['identity']['name']}**, {a['identity']['email']}")
+    for f in res.get("flags", []):
+        st.warning(f"{f['kind']}: {f['detail']}")
+    for n in res.get("notes", []):
+        st.info(n)
+    w = res["weights"]
+    st.write("How the score was made: " + ", ".join(f"{k} {w[k]:.0%}" for k in w))
+    comp = {k: v for k, v in res["components"].items() if v is not None}
+    st.bar_chart(pd.Series(comp, name="component score (0 to 1)"))
+    for title, key in (("Required skills", "required"), ("Preferred skills", "preferred")):
+        if res.get(key):
+            st.markdown(f"**{title}**")
+            for r in res[key]:
+                line = f"- {r['skill']}: {STATUS_ICON[r['status']]}"
+                if r["status"] == "related":
+                    line += f" (from {r['via']})"
+                if r.get("evidence"):
+                    line += f"\n  > {r['evidence']}"
+                st.markdown(line)
+    with st.expander("Exactly what the scorer read (identity removed)"):
+        st.text(a["what_the_scorer_saw"])
+    st.markdown("**Your decision**")
+    if a["decision_reason"]:
+        st.write(f"Current: {a['status']}. Reason: {a['decision_reason']}")
+    with st.form(f"dec{aid}"):
+        d = st.radio("Decision", ["shortlist", "hold", "reject"], horizontal=True)
+        reason = st.text_area("Reason (required, at least 10 characters). Say what you saw in the resume.")
+        if st.form_submit_button("Record decision"):
+            if run(api().decide, aid, d, reason):
+                st.rerun()
+    c = st.columns(3)
+    pdf = run(api().report, aid, reveal)
+    if pdf:
+        c[0].download_button("Download review PDF", pdf, file_name=f"review_{a['candidate_ref']}.pdf", mime="application/pdf")
+    if a["status"] in ("shortlisted", "rejected") and c[1].button("Draft the email", key=f"mail{aid}"):
+        st.session_state[f"draft{aid}"] = run(api().draft_mail, aid)
+    if (dr := st.session_state.get(f"draft{aid}")):
+        st.text_input("To", dr["to"], disabled=True)
+        st.text_input("Subject", dr["subject"], disabled=True)
+        st.text_area("Body", dr["body"], height=200, disabled=True)
+        if st.button("Send this email", key=f"send{aid}"):
+            r = run(api().send_mail, dr["id"])
+            if r:
+                st.success("Sent.") if r["status"] == "sent" else st.error("Not sent: " + r["error"])
+    if a["status"] in ("shortlisted", "interview_invited"):
+        with st.form(f"iv{aid}"):
+            st.markdown("**Schedule an interview**")
+            day = st.date_input("Date", dt.date.today() + dt.timedelta(days=2))
+            tm = st.time_input("Time (UTC)", dt.time(10, 0))
+            mins = st.number_input("Minutes allowed", 10, 180, 45)
+            if st.form_submit_button("Create the interview link"):
+                when = dt.datetime.combine(day, tm, tzinfo=dt.timezone.utc).isoformat()
+                r = run(api().schedule, aid, {"scheduled_at": when, "duration_minutes": int(mins)})
+                if r:
+                    st.success("Link created. The invitation is a draft until you send it.")
+                    st.code(r["link"])
+    for i in a["interviews"]:
+        if i["analysis"]:
+            with st.expander(f"Interview {i['id']}: {i['status']}"):
+                st.json(i["analysis"])
+    with st.expander("Voluntary self-reported group (used only for the fairness report)"):
+        g = st.text_input("Group label", key=f"grp{aid}")
+        if st.button("Save", key=f"grps{aid}") and g:
+            run(api().set_group, aid, g)
+            st.success("Saved.")
+
+
+def page_fairness():
+    job = pick_job("fjob")
+    if not job:
+        return
+    stage = st.radio("Look at", ["human", "model"], format_func=lambda s: "What people decided" if s == "human" else "What the score alone would pick (70+)", horizontal=True)
+    mg = st.number_input("Smallest group size to judge", 2, 100, 10)
+    r = run(api().fairness, job["id"], stage, int(mg))
+    if not r:
+        return
+    st.caption(r["note"])
+    for w in r.get("warnings", []):
+        st.info(w)
+    if r.get("groups"):
+        df = pd.DataFrame(r["groups"]).T
+        st.dataframe(df, width="stretch")
+        if r["flagged"]:
+            st.warning("Groups below four-fifths of the top rate: " + ", ".join(r["flagged"]))
+        else:
+            st.success("No group is flagged. That is not proof the process is fair.")
+
+
+def page_admin():
+    me = st.session_state.me
+    if me["role"] != "admin":
+        st.info("Admins only.")
+        return
+    st.subheader("Audit log")
+    log = run(api().audit) or []
+    if log:
+        st.dataframe(pd.DataFrame(log), hide_index=True, width="stretch")
+    st.subheader("Add a user")
+    with st.form("user"):
+        u = st.text_input("Username")
+        p = st.text_input("Password (10+ characters)", type="password")
+        role = st.selectbox("Role", ["recruiter", "admin"])
+        if st.form_submit_button("Create") and run(api().add_user, {"username": u, "password": p, "role": role}):
+            st.success("User created.")
+    st.subheader("Data retention")
+    if st.button("Delete candidates past their retention date"):
+        r = run(api().purge)
+        if r is not None:
+            st.success(f"{r['removed']} removed.")
+    cid = st.number_input("Erase one candidate by id (removes their applications and interviews)", 0, step=1)
+    if st.button("Erase") and cid:
+        if run(api().erase, int(cid)):
+            st.success("Erased.")
+
+
+if "me" not in st.session_state:
+    login_screen()
+else:
+    me = st.session_state.me
+    st.sidebar.write(f"{me['username']} ({me['role']}), {me['org_name']}")
+    page = st.sidebar.radio("Go to", ["Overview", "Jobs", "Candidates", "Fairness", "Admin"])
+    if st.sidebar.button("Sign out"):
+        st.session_state.clear()
+        st.rerun()
+    {"Overview": page_overview, "Jobs": page_jobs, "Candidates": page_candidates, "Fairness": page_fairness, "Admin": page_admin}[page]()

@@ -1,0 +1,77 @@
+# Skill ontology. Each entry: a canonical name, the ways people write it, the group it belongs to,
+# and "related" skills that count as partial evidence (someone with PyTorch is close to TensorFlow, not the same).
+# Aliases are matched as whole words, case-insensitive. Keep aliases specific: a short alias that is also an
+# ordinary word ("go", "r", "c") is written in a form that is hard to hit by accident, see core/skills.py.
+
+python:        {group: programming, aliases: [python, python3, py3], related: [r, julia]}
+java:          {group: programming, aliases: [java, jdk, jvm], related: [kotlin, scala, c#]}
+javascript:    {group: programming, aliases: [javascript, js, ecmascript], related: [typescript]}
+typescript:    {group: programming, aliases: [typescript, ts], related: [javascript]}
+c++:           {group: programming, aliases: ["c++", cpp], related: [rust]}
+c#:            {group: programming, aliases: ["c#", csharp, "c sharp"], related: [java, .net]}
+go:            {group: programming, aliases: [golang, "go language", "go (golang)"], related: [rust]}
+rust:          {group: programming, aliases: [rust, rustlang], related: [c++, go]}
+kotlin:        {group: programming, aliases: [kotlin], related: [java]}
+r:             {group: programming, aliases: ["r language", "r programming", "r studio", rstudio], related: [python]}
+sql:           {group: data, aliases: [sql, t-sql, pl/sql, plsql], related: [postgresql, mysql]}
+postgresql:    {group: data, aliases: [postgresql, postgres, psql], related: [mysql, sql]}
+mysql:         {group: data, aliases: [mysql, mariadb], related: [postgresql, sql]}
+mongodb:       {group: data, aliases: [mongodb, mongo], related: [nosql]}
+nosql:         {group: data, aliases: [nosql, dynamodb, cassandra], related: [mongodb]}
+redis:         {group: data, aliases: [redis], related: []}
+pandas:        {group: data, aliases: [pandas], related: [numpy]}
+numpy:         {group: data, aliases: [numpy], related: [pandas]}
+spark:         {group: data, aliases: [spark, pyspark, "apache spark"], related: [hadoop, kafka]}
+kafka:         {group: data, aliases: [kafka, "apache kafka"], related: [rabbitmq, spark]}
+airflow:       {group: data, aliases: [airflow, "apache airflow"], related: []}
+machine learning: {group: ml, aliases: ["machine learning", ml, "statistical learning"], related: [deep learning, data science]}
+deep learning: {group: ml, aliases: ["deep learning", "neural networks", "neural network", cnn, rnn, lstm], related: [machine learning]}
+pytorch:       {group: ml, aliases: [pytorch, torch], related: [tensorflow, deep learning]}
+tensorflow:    {group: ml, aliases: [tensorflow, keras, "tf.keras"], related: [pytorch, deep learning]}
+scikit-learn:  {group: ml, aliases: [scikit-learn, sklearn, "scikit learn"], related: [machine learning]}
+nlp:           {group: ml, aliases: [nlp, "natural language processing", "text mining"], related: [llm, machine learning]}
+llm:           {group: ml, aliases: [llm, llms, "large language model", "large language models", genai, "generative ai", rag], related: [nlp]}
+computer vision: {group: ml, aliases: ["computer vision", opencv, "image classification", "object detection"], related: [deep learning]}
+mlops:         {group: ml, aliases: [mlops, mlflow, "model deployment", "model serving"], related: [docker, kubernetes]}
+data science:  {group: ml, aliases: ["data science", "data scientist", "predictive modelling", "predictive modeling"], related: [machine learning, statistics]}
+statistics:    {group: ml, aliases: [statistics, "statistical analysis", "hypothesis testing", "a/b testing", "ab testing"], related: [data science]}
+data analysis: {group: data, aliases: ["data analysis", "data analytics", analytics, "business intelligence", "power bi", tableau], related: [sql, statistics]}
+react:         {group: web, aliases: [react, reactjs, "react.js", "next.js", nextjs], related: [angular, vue]}
+angular:       {group: web, aliases: [angular, angularjs], related: [react, vue]}
+vue:           {group: web, aliases: [vue, vuejs, "vue.js"], related: [react]}
+node.js:       {group: web, aliases: [node, nodejs, "node.js", express, expressjs], related: [javascript]}
+html/css:      {group: web, aliases: [html, html5, css, css3, sass, tailwind], related: [javascript]}
+rest api:      {group: web, aliases: ["rest api", "rest apis", restful, "api design", "web services"], related: [graphql]}
+graphql:       {group: web, aliases: [graphql], related: [rest api]}
+fastapi:       {group: web, aliases: [fastapi, "fast api"], related: [flask, django]}
+flask:         {group: web, aliases: [flask], related: [fastapi, django]}
+django:        {group: web, aliases: [django, drf], related: [flask, fastapi]}
+spring:        {group: web, aliases: [spring, "spring boot", springboot], related: [java]}
+.net:          {group: web, aliases: [".net", dotnet, "asp.net", "asp.net core"], related: [c#]}
+docker:        {group: devops, aliases: [docker, dockerfile, containers, containerization], related: [kubernetes]}
+kubernetes:    {group: devops, aliases: [kubernetes, k8s, helm], related: [docker]}
+aws:           {group: cloud, aliases: [aws, "amazon web services", ec2, s3, lambda, sagemaker], related: [azure, gcp]}
+azure:         {group: cloud, aliases: [azure, "azure devops"], related: [aws, gcp]}
+gcp:           {group: cloud, aliases: [gcp, "google cloud", bigquery, "vertex ai"], related: [aws, azure]}
+terraform:     {group: devops, aliases: [terraform, "infrastructure as code", iac], related: [ansible]}
+ci/cd:         {group: devops, aliases: ["ci/cd", "ci cd", jenkins, "github actions", gitlab-ci, "continuous integration"], related: [docker]}
+linux:         {group: devops, aliases: [linux, ubuntu, bash, "shell scripting"], related: []}
+git:           {group: tools, aliases: [git, github, gitlab, bitbucket], related: []}
+testing:       {group: engineering, aliases: [pytest, junit, "unit testing", "unit tests", "test automation", selenium, "integration testing"], related: []}
+system design: {group: engineering, aliases: ["system design", "distributed systems", microservices, "software architecture"], related: []}
+agile:         {group: process, aliases: [agile, scrum, kanban, jira], related: []}
+cybersecurity: {group: security, aliases: [cybersecurity, "information security", "penetration testing", owasp, siem], related: []}
+networking:    {group: security, aliases: [networking, tcp/ip, "network security", firewall, routing], related: [cybersecurity]}
+excel:         {group: business, aliases: [excel, "ms excel", "advanced excel", "vba"], related: [data analysis]}
+project management: {group: business, aliases: ["project management", pmp, "stakeholder management"], related: [agile]}
+communication: {group: soft, aliases: [communication, presentation, "public speaking"], related: []}
+leadership:    {group: soft, aliases: [leadership, "team lead", "led a team", mentoring], related: [project management]}
+patient care:  {group: clinical, aliases: ["patient care", "bedside care", "patient assessment", triage], related: [clinical documentation]}
+clinical documentation: {group: clinical, aliases: ["electronic medical records", emr, ehr, "clinical documentation", "medical records"], related: [patient care]}
+medication administration: {group: clinical, aliases: ["medication administration", "iv therapy", phlebotomy, "wound care"], related: [patient care]}
+bls/acls:      {group: clinical, aliases: [bls, acls, "basic life support", "advanced cardiac life support"], related: [patient care]}
+scala:         {group: programming, aliases: [scala], related: [java]}
+julia:         {group: programming, aliases: [julia], related: [python]}
+hadoop:        {group: data, aliases: [hadoop, hdfs, mapreduce], related: [spark]}
+rabbitmq:      {group: data, aliases: [rabbitmq, "message queue", sqs], related: [kafka]}
+ansible:       {group: devops, aliases: [ansible, puppet, chef], related: [terraform]}
