@@ -25,7 +25,7 @@ resume file / webhook / form
 
 **Rules and an ontology instead of a language model for the score.** Every number can be traced to a skill and a line of text, the same input always gives the same output, and a resume cannot talk the scorer into anything. The cost is that it misses meaning when the words are different.
 
-**Masking before scoring, with no placeholder tokens.** The first version of masking replaced names with a token such as `[candidate]`. The token itself then leaked into the similarity part and moved scores. Now the masked text is only used for scoring and the removed text is simply deleted. That is why the invariance test shows a change of exactly 0.
+**Masking before scoring, with no placeholder tokens.** Names are not replaced with a placeholder token such as `[candidate]`, because the token itself leaks into the similarity part and moves scores. The masked text is only used for scoring and the removed text is simply deleted. That is why the invariance test shows a change of exactly 0.
 
 **The injection scanner only flags.** If a flag subtracted points, anyone could push a rival down by pasting suspicious text into their own resume. A flag asks for a closer look and nothing else.
 

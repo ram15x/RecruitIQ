@@ -44,7 +44,7 @@ To measure the scorer, I generated synthetic resumes for five roles in several s
 |---|---|---|---|---|
 | TF-IDF only | 0.702 | 0.651 | 100% | 0% |
 | Skill keywords only | 0.770 | 0.725 | 100% | 20% |
-| **RecruitIQ** | **0.943** | **0.803** | **0%** | **100%** |
+| **RecruitIQ** | **0.942** | **0.803** | **0%** | **100%** |
 
 Swapping the name, pronouns and personal-detail lines on the same resume changed the RecruitIQ score by exactly 0. TF-IDF alone moved by up to 1.5 points.
 
@@ -130,6 +130,10 @@ ruff check .
 ```
 
 The tests cover the scoring and the masking, and also the parts that are easy to get wrong in an API: one organisation cannot see another's data, a recruiter cannot reach admin routes, the webhook rejects bad signatures, an interview link works only inside its window and only once, and consent and a written reason are required.
+
+## More
+
+Notes on the results and on running it: [docs/notes.md](docs/notes.md).
 
 ## License
 

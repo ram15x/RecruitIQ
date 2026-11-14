@@ -2,23 +2,6 @@
   "pools": 100,
   "resumes_per_pool": 10,
   "methods": {
-    "legacy (v1 recipe)": {
-      "ndcg": 0.7596612807165938,
-      "pairwise_order": 0.7071428571428572,
-      "stuffed_or_injected_beats_a_strong_resume": 0.93,
-      "top_ranked_is_a_good_fit": 0.19,
-      "mean_score_by_kind": {
-        "strong": 36.4,
-        "paraphrased": 37.0,
-        "hard_paraphrase": 3.2,
-        "adjacent": 27.3,
-        "junior": 28.7,
-        "partial": 16.2,
-        "stuffed": 42.6,
-        "injected": 4.5,
-        "irrelevant": 6.2
-      }
-    },
     "tf-idf only": {
       "ndcg": 0.7016356136488129,
       "pairwise_order": 0.6505714285714286,
@@ -53,7 +36,7 @@
         "irrelevant": 6.8
       }
     },
-    "new scorer": {
+    "RecruitIQ": {
       "ndcg": 0.942360234801776,
       "pairwise_order": 0.8025714285714286,
       "stuffed_or_injected_beats_a_strong_resume": 0.0,
@@ -72,11 +55,6 @@
     }
   },
   "counterfactual_name_pronoun_personal_details": {
-    "legacy (v1 recipe)": {
-      "mean_abs_change": 0.072,
-      "max_abs_change": 0.176,
-      "share_changed": 1.0
-    },
     "tf-idf only": {
       "mean_abs_change": 0.691,
       "max_abs_change": 1.548,
@@ -87,11 +65,10 @@
       "max_abs_change": 0.0,
       "share_changed": 0.0
     },
-    "new scorer": {
+    "RecruitIQ": {
       "mean_abs_change": 0.0,
       "max_abs_change": 0.0,
       "share_changed": 0.0
     }
-  },
-  "legacy_rrf_term_constant": 0.03278688524590164
+  }
 }

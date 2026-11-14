@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from eval import baselines, synth  # noqa: E402
+from eval import synth  # noqa: E402
 from recruitiq.core.jobspec import JobSpec  # noqa: E402
 from recruitiq.core.scoring import Scorer  # noqa: E402
 from recruitiq.core.similarity import TfidfSimilarity  # noqa: E402
@@ -30,10 +30,6 @@ def methods(role, job):
     jd = synth.ROLES[role]["jd"]
     jd_skills = job.required + job.preferred
 
-    def legacy(text, names):
-        rs = list(O.extract(text))
-        return baselines.legacy_score(text, jd, rs, jd_skills)
-
     def tfidf_only(text, names):
         return 100 * TF.score(text, jd)
 
@@ -45,11 +41,11 @@ def methods(role, job):
     def new(text, names):
         return SC.score(text, job, names).score
 
-    return {"legacy (v1 recipe)": legacy, "tf-idf only": tfidf_only, "skill keywords only": skills_presence, "new scorer": new}
+    return {"tf-idf only": tfidf_only, "skill keywords only": skills_presence, "RecruitIQ": new}
 
 
 def main():
-    names_m = ["legacy (v1 recipe)", "tf-idf only", "skill keywords only", "new scorer"]
+    names_m = ["tf-idf only", "skill keywords only", "RecruitIQ"]
     agg = {m: {"ndcg": [], "pair": [], "bad_above_good": [], "top1_good": [], "per_kind": {}} for m in names_m}
     for role, r in synth.ROLES.items():
         job = JobSpec.from_text(r["title"], r["jd"])
@@ -96,8 +92,7 @@ def main():
                     deltas[m].append(abs(fns[m](text, [name]) - fns[m](swapped, [alt_name])))
     cf = {m: {"mean_abs_change": round(statistics.mean(d), 3), "max_abs_change": round(max(d), 3),
               "share_changed": round(sum(1 for x in d if x > 1e-9) / len(d), 3)} for m, d in deltas.items()}
-    res = {"pools": n, "resumes_per_pool": 10, "methods": out, "counterfactual_name_pronoun_personal_details": cf,
-           "legacy_rrf_term_constant": baselines.legacy_rrf_single_document()}
+    res = {"pools": n, "resumes_per_pool": 10, "methods": out, "counterfactual_name_pronoun_personal_details": cf}
     (ROOT / "results").mkdir(exist_ok=True)
     (ROOT / "results" / "benchmark.json").write_text(json.dumps(res, indent=2))
     print(json.dumps(res, indent=2))

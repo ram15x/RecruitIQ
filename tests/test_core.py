@@ -143,7 +143,7 @@ class TestScoring:
 
 
 def test_rrf_over_one_document_is_the_same_number_whatever_the_document():
-    # the bug in the first version: fusing a ranking of one item gives 2/61 for every resume
+    # a known trap: fusing a ranking of one item gives 2/61 for every resume
     one = rrf([["a"], ["a"]])["a"]
     assert one == pytest.approx(2 / 61) and rrf([["zzz"], ["zzz"]])["zzz"] == one
     pool = rrf([["a", "b", "c"], ["b", "a", "c"]])
